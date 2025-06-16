@@ -2,5 +2,44 @@
 
 extern "C" {
 	typedef void (*ErrorFunc)(HRESULT);
-  	void __declspec(dllexport) __stdcall StartDiary(HWND, ErrorFunc);
+	void __declspec(dllexport) __stdcall StartDiary(HWND, ErrorFunc);
 }
+
+constexpr int MAX_DIARY_FILES = 2;
+
+struct DesktopDuplication
+{
+	DesktopDuplication(HWND hWnd, ErrorFunc errorFunc);
+
+private:
+
+	HWND hWnd;
+	ErrorFunc errorFunc;
+	int outputFileIndex = -1;
+	std::ofstream outputFile;
+	int outputFileFrameCount{};
+	hr_time_point frameTimePoint;
+
+	winrt::com_ptr<IDXGIFactory> dxgiFactory;
+	winrt::com_ptr<ID3D11Device> d3d11Device;
+	winrt::com_ptr<ID3D11DeviceContext> immediateContext;
+	winrt::com_ptr<IDXGIDevice> dxgiDevice;
+
+	winrt::Windows::Graphics::DirectX::Direct3D11::IDirect3DDevice d3dRtDevice;
+	winrt::Windows::Graphics::Capture::GraphicsCaptureItem captureItem = { nullptr };
+	winrt::Windows::Graphics::Capture::Direct3D11CaptureFramePool framePool = { nullptr };
+	winrt::Windows::Graphics::Capture::GraphicsCaptureSession captureSession = { nullptr };
+
+	winrt::Windows::Graphics::SizeInt32 lastFrameSize = {};
+
+	void OnFrameArrived(
+		winrt::Windows::Graphics::Capture::Direct3D11CaptureFramePool const& sender,
+		winrt::Windows::Foundation::IInspectable const&);
+	winrt::Windows::Graphics::Capture::Direct3D11CaptureFramePool::FrameArrived_revoker frameArrivedRevoker;
+
+	winrt::Windows::Graphics::DirectX::DirectXPixelFormat DxgiPixelFormatToRtPixelFormat(DXGI_FORMAT) const;
+	int GetFormatBytesPerPixel(DXGI_FORMAT) const;
+
+	void OpenNextOutputFile();
+	void DumpFrameData(const D3D11_MAPPED_SUBRESOURCE&, DXGI_FORMAT, winrt::Windows::Graphics::SizeInt32);
+};
