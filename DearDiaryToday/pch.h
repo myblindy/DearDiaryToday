@@ -22,10 +22,17 @@
 #pragma comment(lib, "D3D11.lib")
 #pragma comment(lib, "DXGI.lib")
 
+#include <mfapi.h>
+#include <mfreadwrite.h>
+
+#pragma commenet(lib, "Mfplat.lib")
+#pragma commenet(lib, "Mfreadwrite.lib")
+
 #include <vector>
 #include <thread>
 #include <filesystem>
 #include <fstream>
+#include <codecvt>
 #include <chrono>
 #include "framework.h"
 

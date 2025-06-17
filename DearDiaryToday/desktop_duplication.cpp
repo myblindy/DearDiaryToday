@@ -5,6 +5,7 @@ using namespace ATL;
 using namespace std;
 
 using namespace winrt;
+using namespace Windows::Foundation;
 using namespace Windows::Foundation::Numerics;
 using namespace Windows::Graphics;
 using namespace Windows::Graphics::Capture;
@@ -14,7 +15,14 @@ using namespace Windows::Graphics::DirectX::Direct3D11;
 unique_ptr<DesktopDuplication> desktopDuplicationInstance;
 void StartDiary(HWND _hWnd, ErrorFunc _errorFunc)
 {
+	MFStartup(MF_VERSION);
 	desktopDuplicationInstance = make_unique<DesktopDuplication>(_hWnd, _errorFunc);
+}
+
+void __stdcall ExportDiaryVideo(const char* outputPath, ExportDiaryVideoCompletion completion)
+{
+	string outputPathString = outputPath;
+	desktopDuplicationInstance->ExportVideo({ outputPathString.begin(), outputPathString.end() }, completion);
 }
 
 #define CHECK_PTR(ptr) do { if (!ptr) { errorFunc(S_FALSE); return; } } while (false)
@@ -24,6 +32,7 @@ DesktopDuplication::DesktopDuplication(HWND hWnd, ErrorFunc errorFunc)
 {
 	this->hWnd = hWnd;
 	this->errorFunc = errorFunc;
+	InitializeCriticalSection(&fileAccessCriticalSection);
 
 	CHECK_HR(CreateDXGIFactory(IID_PPV_ARGS(dxgiFactory.put())));
 
@@ -44,7 +53,7 @@ DesktopDuplication::DesktopDuplication(HWND hWnd, ErrorFunc errorFunc)
 	dxgiDevice = d3d11Device.as<IDXGIDevice>();
 
 	{
-		com_ptr<IInspectable> d3dRawRtDevice;
+		com_ptr<::IInspectable> d3dRawRtDevice;
 		CHECK_HR(CreateDirect3D11DeviceFromDXGIDevice(dxgiDevice.get(), d3dRawRtDevice.put()));
 		d3dRtDevice = d3dRawRtDevice.as<IDirect3DDevice>();
 	}
@@ -67,6 +76,65 @@ DesktopDuplication::DesktopDuplication(HWND hWnd, ErrorFunc errorFunc)
 			captureSession.IsBorderRequired(false);
 			captureSession.StartCapture();
 		});
+}
+
+IAsyncAction DesktopDuplication::ExportVideo(u8string outputPath, ExportDiaryVideoCompletion completion)
+{
+	EnterCriticalSection(&fileAccessCriticalSection);
+	// close the current output file, and rename them to temporary names so we can parse them in peace
+	outputFile.close();
+
+	int partIdx = 0;
+	vector<filesystem::path> diaryFilePaths;
+	for (int i = outputFileIndex + 1; i < MAX_DIARY_FILES; ++i)
+	{
+		auto srcDiaryFilePath = GetDiaryFilePath(i, false);
+		auto dstDiaryFilePath = srcDiaryFilePath.parent_path() / ("tmp_part_" + to_string(partIdx++));
+		diaryFilePaths.push_back(dstDiaryFilePath);
+		filesystem::remove(dstDiaryFilePath);
+		filesystem::rename(srcDiaryFilePath, dstDiaryFilePath);
+	}
+	for (int i = 0; i <= outputFileIndex; ++i)
+	{
+		auto srcDiaryFilePath = GetDiaryFilePath(i, false);
+		auto dstDiaryFilePath = srcDiaryFilePath.parent_path() / ("tmp_part_" + to_string(partIdx++));
+		diaryFilePaths.push_back(dstDiaryFilePath);
+		filesystem::remove(dstDiaryFilePath);
+		filesystem::rename(srcDiaryFilePath, dstDiaryFilePath);
+	}
+
+	OpenNextOutputFile();
+
+	LeaveCriticalSection(&fileAccessCriticalSection);
+
+	// read the max frame size
+	auto maxFrameSize = GetMaximumSavedFrameSize(diaryFilePaths);
+
+	wstring_convert<codecvt_utf8_utf16<char16_t>, char16_t> convert;
+
+	com_ptr<IMFSinkWriter> sinkWriter;
+	CHECK_HR(MFCreateSinkWriterFromURL((LPCWSTR)convert.from_bytes((const char*)outputPath.data()).c_str(), nullptr, nullptr, sinkWriter.put()));
+
+	com_ptr<IMFMediaType> mediaTypeOut, mediaTypeIn;
+	CHECK_HR(MFCreateMediaType(mediaTypeOut.put()));
+	CHECK_HR(mediaTypeOut->SetGUID(MF_MT_MAJOR_TYPE, MFMediaType_Video));
+	CHECK_HR(mediaTypeOut->SetGUID(MF_MT_SUBTYPE, MFVideoFormat_H264));
+	CHECK_HR(mediaTypeOut->SetUINT32(MF_MT_AVG_BITRATE, DIARY_VIDEO_BITRATE));
+	CHECK_HR(MFSetAttributeSize(mediaTypeOut.get(), MF_MT_FRAME_SIZE, maxFrameSize.Width, maxFrameSize.Height));
+	CHECK_HR(MFSetAttributeRatio(mediaTypeOut.get(), MF_MT_FRAME_RATE, 30, 1)); // 30 FPS
+	CHECK_HR(MFSetAttributeRatio(mediaTypeOut.get(), MF_MT_PIXEL_ASPECT_RATIO, 1, 1));
+
+	DWORD streamIndex{};
+	CHECK_HR(sinkWriter->AddStream(mediaTypeOut.get(), &streamIndex));
+
+	CHECK_HR(MFCreateMediaType(mediaTypeIn.put()));
+	CHECK_HR(mediaTypeIn->SetGUID(MF_MT_MAJOR_TYPE, MFMediaType_Video));
+	CHECK_HR(mediaTypeIn->SetGUID(MF_MT_SUBTYPE, MFVideoFormat_RGB32));
+	CHECK_HR(MFSetAttributeSize(mediaTypeOut.get(), MF_MT_FRAME_SIZE, maxFrameSize.Width, maxFrameSize.Height));
+	CHECK_HR(MFSetAttributeRatio(mediaTypeOut.get(), MF_MT_PIXEL_ASPECT_RATIO, 1, 1));
+
+	CHECK_HR(sinkWriter->SetInputMediaType(streamIndex, mediaTypeIn.get(), nullptr));
+	CHECK_HR(sinkWriter->BeginWriting());
 }
 
 DirectXPixelFormat DesktopDuplication::DxgiPixelFormatToRtPixelFormat(DXGI_FORMAT dxgiFormat) const
@@ -124,16 +192,22 @@ void DesktopDuplication::OnFrameArrived(Direct3D11CaptureFramePool const& sender
 	}
 }
 
+std::filesystem::path DesktopDuplication::GetDiaryFilePath(int index, bool create) const
+{
+	filesystem::path diaryPath = filesystem::current_path() / ".diary";
+
+	if (create)
+		filesystem::create_directory(diaryPath);
+
+	return diaryPath / ("diary_" + to_string(outputFileIndex) + ".dat");
+}
+
 void DesktopDuplication::OpenNextOutputFile()
 {
 	outputFileIndex = (outputFileIndex + 1) % MAX_DIARY_FILES;
 
-	filesystem::path diaryPath = filesystem::current_path() / ".diary";
-	filesystem::create_directory(diaryPath);
-
-	auto diaryFilePath = diaryPath / ("diary_" + to_string(outputFileIndex) + ".dat");
 	outputFile.close();
-	outputFile.open(diaryFilePath, ios::binary | ios::out | ios::trunc);
+	outputFile.open(GetDiaryFilePath(outputFileIndex, true), ios::binary | ios::out | ios::trunc);
 
 	outputFileFrameCount = 0;
 }
@@ -154,6 +228,7 @@ void DesktopDuplication::DumpFrameData(const D3D11_MAPPED_SUBRESOURCE& mappedRes
 	// max frame rate
 	if (outputFileFrameCount == 0 || time_span_ns >= 1.0 / MAX_FRAME_RATE * chrono::nanoseconds(1s).count())
 	{
+		EnterCriticalSection(&fileAccessCriticalSection);
 		outputFile.write(reinterpret_cast<const char*>(&newFrameSize.Width), sizeof(newFrameSize.Width));
 		outputFile.write(reinterpret_cast<const char*>(&newFrameSize.Height), sizeof(newFrameSize.Height));
 		outputFile.write(reinterpret_cast<const char*>(&format), sizeof(format));
@@ -163,14 +238,40 @@ void DesktopDuplication::DumpFrameData(const D3D11_MAPPED_SUBRESOURCE& mappedRes
 		for (int y = 0; y < newFrameSize.Height; ++y)
 			outputFile.write(reinterpret_cast<const char*>(mappedResource.pData) + y * mappedResource.RowPitch,
 				newFrameSize.Width * bytesPerPixel);
+		LeaveCriticalSection(&fileAccessCriticalSection);
 
 		++outputFileFrameCount;
-		OutputDebugStringA(std::format("Frame: {}\n", outputFileFrameCount).c_str());
 		frameTimePoint = now;
 
 		// file switch?
 		if (outputFileFrameCount > MAX_FRAMES_PER_DIARY_FILE)
 			OpenNextOutputFile();
+	}
+}
+
+Windows::Graphics::SizeInt32 DesktopDuplication::GetMaximumSavedFrameSize(const vector<filesystem::path>& partPaths) const
+{
+	SizeInt32 maxSize{};
+
+	for (const auto& partPath : partPaths)
+	{
+		ifstream inputFile(partPath, ios::binary | ios::in);
+
+		while (true)
+		{
+			SizeInt32 size{};
+			inputFile.read(reinterpret_cast<char*>(&size.Width), sizeof(size.Width));
+			inputFile.read(reinterpret_cast<char*>(&size.Height), sizeof(size.Height));
+			DXGI_FORMAT format{};
+			inputFile.read(reinterpret_cast<char*>(&format), sizeof(format));
+			inputFile.seekg(sizeof(chrono::nanoseconds::rep), ios::cur); // skip timestamp
+			inputFile.seekg(size.Width * size.Height * GetFormatBytesPerPixel(format), ios::cur); // skip pixel data
+			if (inputFile.eof())
+				break;
+
+			maxSize.Width = max(maxSize.Width, size.Width);
+			maxSize.Height = max(maxSize.Height, size.Height);
+		}
 	}
 }
 
