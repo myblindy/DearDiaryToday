@@ -6,6 +6,8 @@ extern "C" {
 }
 
 constexpr int MAX_DIARY_FILES = 2;
+constexpr int MAX_FRAME_RATE = 30;
+constexpr int MAX_FRAMES_PER_DIARY_FILE = 10 * MAX_FRAME_RATE;
 
 struct DesktopDuplication
 {

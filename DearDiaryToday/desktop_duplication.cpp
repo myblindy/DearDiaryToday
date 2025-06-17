@@ -85,44 +85,42 @@ void DesktopDuplication::OnFrameArrived(Direct3D11CaptureFramePool const& sender
 	auto newFrame = sender.TryGetNextFrame();
 	auto newFrameSize = newFrame.ContentSize();
 
+	auto newFrameSurface = newFrame.Surface();
+
+	// get frame texture
+	com_ptr<ID3D11Texture2D> newFrameTexture;
 	{
-		auto newFrameSurface = newFrame.Surface();
+		auto access = newFrameSurface.as<IDirect3DDxgiInterfaceAccess>();
+		CHECK_HR(access->GetInterface(guid_of<ID3D11Texture2D>(), newFrameTexture.put_void()));
+	}
 
-		// get frame texture
-		com_ptr<ID3D11Texture2D> newFrameTexture;
-		{
-			auto access = newFrameSurface.as<IDirect3DDxgiInterfaceAccess>();
-			CHECK_HR(access->GetInterface(guid_of<ID3D11Texture2D>(), newFrameTexture.put_void()));
-		}
+	// create a staging texture
+	D3D11_TEXTURE2D_DESC desc{};
+	newFrameTexture->GetDesc(&desc);
+	desc.Usage = D3D11_USAGE_STAGING;
+	desc.BindFlags = 0;
+	desc.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
+	desc.MiscFlags = 0;
 
-		// create a staging texture
-		D3D11_TEXTURE2D_DESC desc{};
-		newFrameTexture->GetDesc(&desc);
-		desc.Usage = D3D11_USAGE_STAGING;
-		desc.BindFlags = 0;
-		desc.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
-		desc.MiscFlags = 0;
+	com_ptr<ID3D11Texture2D> stagingTexture;
+	CHECK_HR(d3d11Device->CreateTexture2D(&desc, nullptr, stagingTexture.put()));
+	immediateContext->CopyResource(stagingTexture.get(), newFrameTexture.get());
+	newFrameTexture = nullptr;
+	newFrameSurface = nullptr;
 
-		com_ptr<ID3D11Texture2D> stagingTexture;
-		CHECK_HR(d3d11Device->CreateTexture2D(&desc, nullptr, stagingTexture.put()));
-		immediateContext->CopyResource(stagingTexture.get(), newFrameTexture.get());
-		newFrameTexture = nullptr;
-		newFrameSurface = nullptr;
+	auto newFrameRtPixelFormat = DxgiPixelFormatToRtPixelFormat(desc.Format);
 
-		auto newFrameRtPixelFormat = DxgiPixelFormatToRtPixelFormat(desc.Format);
+	// try to map for reading
+	D3D11_MAPPED_SUBRESOURCE mappedResource{};
+	CHECK_HR(immediateContext->Map(stagingTexture.get(), 0, D3D11_MAP_READ, 0, &mappedResource));
+	DumpFrameData(mappedResource, desc.Format, newFrameSize);
+	immediateContext->Unmap(stagingTexture.get(), 0);
 
-		// try to map for reading
-		D3D11_MAPPED_SUBRESOURCE mappedResource{};
-		CHECK_HR(immediateContext->Map(stagingTexture.get(), 0, D3D11_MAP_READ, 0, &mappedResource));
-		DumpFrameData(mappedResource, desc.Format, newFrameSize);
-		immediateContext->Unmap(stagingTexture.get(), 0);
-
-		// resize the frame pool if the size has changed
-		if (newFrameSize != lastFrameSize)
-		{
-			lastFrameSize = newFrameSize;
-			framePool.Recreate(d3dRtDevice, newFrameRtPixelFormat, 2, lastFrameSize);
-		}
+	// resize the frame pool if the size has changed
+	if (newFrameSize != lastFrameSize)
+	{
+		lastFrameSize = newFrameSize;
+		framePool.Recreate(d3dRtDevice, newFrameRtPixelFormat, 2, lastFrameSize);
 	}
 }
 
@@ -134,7 +132,10 @@ void DesktopDuplication::OpenNextOutputFile()
 	filesystem::create_directory(diaryPath);
 
 	auto diaryFilePath = diaryPath / ("diary_" + to_string(outputFileIndex) + ".dat");
+	outputFile.close();
 	outputFile.open(diaryFilePath, ios::binary | ios::out | ios::trunc);
+
+	outputFileFrameCount = 0;
 }
 
 void DesktopDuplication::DumpFrameData(const D3D11_MAPPED_SUBRESOURCE& mappedResource, DXGI_FORMAT format, SizeInt32 newFrameSize)
@@ -148,19 +149,29 @@ void DesktopDuplication::DumpFrameData(const D3D11_MAPPED_SUBRESOURCE& mappedRes
 	hr_time_point now = hr_clock::now();
 	if (outputFileFrameCount == 0) frameTimePoint = now;
 
-	outputFile.write(reinterpret_cast<const char*>(&newFrameSize.Width), sizeof(newFrameSize.Width));
-	outputFile.write(reinterpret_cast<const char*>(&newFrameSize.Height), sizeof(newFrameSize.Height));
-	outputFile.write(reinterpret_cast<const char*>(&format), sizeof(format));
-
 	auto time_span_ns = duration_cast<chrono::nanoseconds> (now - frameTimePoint).count();
-	outputFile.write(reinterpret_cast<const char*>(&time_span_ns), sizeof(time_span_ns));
 
-	for (int y = 0; y < newFrameSize.Height; ++y)
-		outputFile.write(reinterpret_cast<const char*>(mappedResource.pData) + y * mappedResource.RowPitch,
-			newFrameSize.Width * bytesPerPixel);
+	// max frame rate
+	if (outputFileFrameCount == 0 || time_span_ns >= 1.0 / MAX_FRAME_RATE * chrono::nanoseconds(1s).count())
+	{
+		outputFile.write(reinterpret_cast<const char*>(&newFrameSize.Width), sizeof(newFrameSize.Width));
+		outputFile.write(reinterpret_cast<const char*>(&newFrameSize.Height), sizeof(newFrameSize.Height));
+		outputFile.write(reinterpret_cast<const char*>(&format), sizeof(format));
 
-	++outputFileFrameCount;
-	frameTimePoint = now;
+		outputFile.write(reinterpret_cast<const char*>(&time_span_ns), sizeof(time_span_ns));
+
+		for (int y = 0; y < newFrameSize.Height; ++y)
+			outputFile.write(reinterpret_cast<const char*>(mappedResource.pData) + y * mappedResource.RowPitch,
+				newFrameSize.Width * bytesPerPixel);
+
+		++outputFileFrameCount;
+		OutputDebugStringA(std::format("Frame: {}\n", outputFileFrameCount).c_str());
+		frameTimePoint = now;
+
+		// file switch?
+		if (outputFileFrameCount > MAX_FRAMES_PER_DIARY_FILE)
+			OpenNextOutputFile();
+	}
 }
 
 int DesktopDuplication::GetFormatBytesPerPixel(DXGI_FORMAT format) const
