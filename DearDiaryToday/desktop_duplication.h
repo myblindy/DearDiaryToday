@@ -4,8 +4,8 @@ extern "C" {
 	typedef void (*ErrorFunc)(HRESULT);
 	void __declspec(dllexport) __stdcall StartDiary(HWND, ErrorFunc);
 
-	typedef void (*ExportDiaryVideoCompletion)();
-	void __declspec(dllexport) __stdcall  ExportDiaryVideo(const char*, ExportDiaryVideoCompletion);
+	typedef void (*ExportDiaryVideoCompletion)(void*);
+	void __declspec(dllexport) __stdcall  ExportDiaryVideo(LPWSTR, ExportDiaryVideoCompletion, void*);
 }
 
 constexpr int MAX_DIARY_FILES = 2;
@@ -14,10 +14,10 @@ constexpr int MAX_FRAMES_PER_DIARY_FILE = 10 * MAX_FRAME_RATE;
 
 constexpr int DIARY_VIDEO_BITRATE = 30000;
 
-struct DesktopDuplication
+struct DesktopDuplication : winrt::implements<DesktopDuplication, ::IInspectable>
 {
 	DesktopDuplication(HWND hWnd, ErrorFunc errorFunc);
-	Windows::Foundation::IAsyncAction ExportVideo(u8string, ExportDiaryVideoCompletion);
+	winrt::Windows::Foundation::IAsyncAction ExportVideo(std::wstring);
 
 private:
 	HWND hWnd;
@@ -53,5 +53,5 @@ private:
 	void OpenNextOutputFile();
 	void DumpFrameData(const D3D11_MAPPED_SUBRESOURCE&, DXGI_FORMAT, winrt::Windows::Graphics::SizeInt32);
 
-	Windows::Graphics::SizeInt32 GetMaximumSavedFrameSize(const vector<filesystem::path>& partPaths) const;
+	winrt::Windows::Graphics::SizeInt32 GetMaximumSavedFrameSize(const std::vector<std::filesystem::path>& partPaths) const;
 };

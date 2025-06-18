@@ -2,6 +2,7 @@
 
 #define WIN32_LEAN_AND_MEAN     
 #define _CRT_SECURE_NO_WARNINGS
+#define _SILENCE_CXX17_CODECVT_HEADER_DEPRECATION_WARNING
 
 #include <windows.h>
 #include <atlbase.h>
@@ -23,10 +24,13 @@
 #pragma comment(lib, "DXGI.lib")
 
 #include <mfapi.h>
+#include <mfidl.h>
 #include <mfreadwrite.h>
 
-#pragma commenet(lib, "Mfplat.lib")
-#pragma commenet(lib, "Mfreadwrite.lib")
+#pragma comment(lib, "mf")
+#pragma comment(lib, "mfplat")
+#pragma comment(lib, "mfreadwrite")
+#pragma comment(lib, "mfuuid")
 
 #include <vector>
 #include <thread>
@@ -34,6 +38,7 @@
 #include <fstream>
 #include <codecvt>
 #include <chrono>
+#include <functional>
 #include "framework.h"
 
 typedef std::chrono::high_resolution_clock hr_clock;

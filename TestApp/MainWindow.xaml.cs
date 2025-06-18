@@ -42,4 +42,9 @@ public partial class MainWindow : Window
     {
         DearDiaryToday.StartDiary(new WindowInteropHelper(this).Handle);
     }
+
+    private void SaveClicked(object sender, RoutedEventArgs e)
+    {
+        DearDiaryToday.ExportDiaryVideo($".diary/{DateTime.Now:yyyyMMddHHmmss}.mp4");
+    }
 }
