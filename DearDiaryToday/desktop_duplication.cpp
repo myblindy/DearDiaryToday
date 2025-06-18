@@ -82,6 +82,12 @@ DesktopDuplication::DesktopDuplication(HWND hWnd, ErrorFunc errorFunc)
 	InitAsync();
 }
 
+static int roundUp(int numToRound, int multiple)
+{
+	assert(multiple && ((multiple & (multiple - 1)) == 0));
+	return (numToRound + multiple - 1) & -multiple;
+}
+
 IAsyncAction DesktopDuplication::ExportVideo(wstring outputPath)
 {
 	EnterCriticalSection(&fileAccessCriticalSection);
@@ -134,7 +140,41 @@ IAsyncAction DesktopDuplication::ExportVideo(wstring outputPath)
 		CHECK_HR_CR(MFTEnum(MFT_CATEGORY_VIDEO_PROCESSOR, 0, &inputType, &outputType, nullptr, &mftClsid, &mftClsidCount));
 		CHECK_HR_CR(CoCreateInstance(*mftClsid, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(frameTransform.put())));
 		CoTaskMemFree(mftClsid);
+
+		frameTransform->SetInputType()
 	}
+	vector<DWORD> inputStreams, outputStreams;
+	{
+		DWORD inputStreamCount{}, outputStreamCount{};
+		CHECK_HR_CR(frameTransform->GetStreamCount(&inputStreamCount, &outputStreamCount));
+		inputStreams.resize(inputStreamCount);
+		outputStreams.resize(outputStreamCount);
+		auto hr = frameTransform->GetStreamIDs(inputStreamCount, inputStreams.data(), outputStreamCount, outputStreams.data());
+		if (hr == E_NOTIMPL)
+		{
+			// some MFTs don't support GetStreamIDs, so we just assume the first stream is the input and output
+			inputStreams[0] = 0;
+			outputStreams[0] = 0;
+		}
+		else
+			CHECK_HR_CR(hr);
+	}
+
+	MFT_OUTPUT_STREAM_INFO outputStreamInfo{};
+	CHECK_HR_CR(frameTransform->GetOutputStreamInfo(outputStreams[0], &outputStreamInfo));
+	if (outputStreamInfo.cbSize == 0)
+		outputStreamInfo.cbSize = maxFrameSize.Width * roundUp(maxFrameSize.Height, 2) * 4;
+
+	com_ptr<IMFMediaBuffer> outputBuffer;
+	CHECK_HR_CR(MFCreateMemoryBuffer(outputStreamInfo.cbSize, outputBuffer.put()));
+
+	com_ptr<IMFSample> outputSample;
+	CHECK_HR_CR(MFCreateSample(outputSample.put()));
+	CHECK_HR_CR(outputSample->AddBuffer(outputBuffer.get()));
+
+	MFT_OUTPUT_DATA_BUFFER mftOutputData{};
+	mftOutputData.dwStreamID = outputStreams[0];
+	mftOutputData.pSample = outputSample.get();
 
 	com_ptr<IMFSinkWriter> sinkWriter;
 	DWORD streamIndex{};
@@ -146,24 +186,25 @@ IAsyncAction DesktopDuplication::ExportVideo(wstring outputPath)
 		CHECK_HR_CR(mediaTypeOut->SetGUID(MF_MT_MAJOR_TYPE, MFMediaType_Video));
 		CHECK_HR_CR(mediaTypeOut->SetGUID(MF_MT_SUBTYPE, MFVideoFormat_H264));
 		CHECK_HR_CR(mediaTypeOut->SetUINT32(MF_MT_AVG_BITRATE, DIARY_VIDEO_BITRATE));
-		CHECK_HR_CR(MFSetAttributeSize(mediaTypeOut.get(), MF_MT_FRAME_SIZE, maxFrameSize.Width, maxFrameSize.Height));
+		CHECK_HR_CR(MFSetAttributeSize(mediaTypeOut.get(), MF_MT_FRAME_SIZE, maxFrameSize.Width, roundUp(maxFrameSize.Height, 2)));
 		CHECK_HR_CR(MFSetAttributeRatio(mediaTypeOut.get(), MF_MT_FRAME_RATE, 30, 1)); // 30 FPS
 		CHECK_HR_CR(MFSetAttributeRatio(mediaTypeOut.get(), MF_MT_PIXEL_ASPECT_RATIO, 1, 1));
-
-		CHECK_HR_CR(sinkWriter->AddStream(mediaTypeOut.get(), &streamIndex));
+		CHECK_HR_CR(mediaTypeOut->SetUINT32(MF_MT_INTERLACE_MODE, MFVideoInterlace_Progressive));
 
 		CHECK_HR_CR(MFCreateMediaType(mediaTypeIn.put()));
 		CHECK_HR_CR(mediaTypeIn->SetGUID(MF_MT_MAJOR_TYPE, MFMediaType_Video));
 		CHECK_HR_CR(mediaTypeIn->SetGUID(MF_MT_SUBTYPE, MFVideoFormat_NV12));
-		CHECK_HR_CR(MFSetAttributeSize(mediaTypeIn.get(), MF_MT_FRAME_SIZE, maxFrameSize.Width, maxFrameSize.Height));
+		CHECK_HR_CR(MFSetAttributeSize(mediaTypeIn.get(), MF_MT_FRAME_SIZE, maxFrameSize.Width, roundUp(maxFrameSize.Height, 2)));
 		CHECK_HR_CR(MFSetAttributeRatio(mediaTypeIn.get(), MF_MT_FRAME_RATE, 30, 1)); // 30 FPS
 		CHECK_HR_CR(MFSetAttributeRatio(mediaTypeIn.get(), MF_MT_PIXEL_ASPECT_RATIO, 1, 1));
 
+		CHECK_HR_CR(sinkWriter->AddStream(mediaTypeOut.get(), &streamIndex));
 		CHECK_HR_CR(sinkWriter->SetInputMediaType(streamIndex, mediaTypeIn.get(), nullptr));
 		CHECK_HR_CR(sinkWriter->BeginWriting());
 	}
 
 	int64_t frameTimePointNs{};
+	vector<char> frameDataBuffer;
 	for (auto& diaryFilePath : diaryFilePaths)
 	{
 		ifstream inputFile(diaryFilePath, ios::binary | ios::in);
@@ -180,20 +221,49 @@ IAsyncAction DesktopDuplication::ExportVideo(wstring outputPath)
 		frameTimePointNs += frameTimeNs;
 		auto bpp = GetFormatBytesPerPixel(format);
 
-		com_ptr<IMFMediaBuffer> mediaBuffer;
-		CHECK_HR_CR(MFCreateMemoryBuffer(width * height * bpp, mediaBuffer.put()));
-		BYTE* data = nullptr;
-		CHECK_HR_CR(mediaBuffer->Lock(&data, nullptr, nullptr));
-		inputFile.read(reinterpret_cast<char*>(data), width * height * bpp);
-		CHECK_HR_CR(mediaBuffer->Unlock());
-		CHECK_HR_CR(mediaBuffer->SetCurrentLength(width * height * bpp));
+		frameDataBuffer.clear();
+		frameDataBuffer.resize(width * roundUp(height, 2) * bpp);
+		inputFile.read(frameDataBuffer.data(), width * height * bpp);
 
-		com_ptr<IMFSample> sample;
-		CHECK_HR_CR(MFCreateSample(sample.put()));
-		CHECK_HR_CR(sample->AddBuffer(mediaBuffer.get()));
-		CHECK_HR_CR(sample->SetSampleTime(frameTimePointNs / 100));
-		CHECK_HR_CR(sample->SetSampleDuration(33 * 10000));
-		CHECK_HR_CR(sinkWriter->WriteSample(streamIndex, sample.get()));
+		{
+			// MFT transform
+			com_ptr<IMFSample> sample;
+			CHECK_HR_CR(MFCreateSample(sample.put()));
+
+			com_ptr<IMFMediaBuffer> mediaBuffer;
+			CHECK_HR_CR(MFCreateAlignedMemoryBuffer(width * roundUp(height, 2) * bpp, sizeof(void*), mediaBuffer.put()));
+
+			BYTE* data = nullptr;
+			CHECK_HR_CR(mediaBuffer->Lock(&data, nullptr, nullptr));
+			memcpy(data, frameDataBuffer.data(), width * height * bpp);
+			CHECK_HR_CR(mediaBuffer->Unlock());
+			CHECK_HR_CR(mediaBuffer->SetCurrentLength(width * roundUp(height, 2) * bpp));
+
+			CHECK_HR_CR(sample->AddBuffer(mediaBuffer.get()));
+			CHECK_HR_CR(frameTransform->ProcessInput(inputStreams[0], sample.get(), 0));
+		}
+
+
+		{
+			// samples
+		nextSample:
+
+			DWORD outputStatus = 0;
+			auto outputHr = frameTransform->ProcessOutput(0, 1, &mftOutputData, &outputStatus);
+			if (outputHr == S_OK)
+			{
+				CHECK_HR_CR(outputSample->SetSampleTime(frameTimePointNs / 100));
+				CHECK_HR_CR(outputSample->SetSampleDuration(33 * 10000));
+				CHECK_HR_CR(sinkWriter->WriteSample(streamIndex, outputSample.get()));
+				goto nextSample;
+			}
+			else if (outputHr == MF_E_TRANSFORM_NEED_MORE_INPUT)
+				continue;
+			else if (FAILED(outputHr))
+				CHECK_HR_CR(outputHr);
+			else
+				errorFunc(E_NOTIMPL); // unexpected output status
+		}
 	}
 
 	sinkWriter->Finalize();
@@ -351,122 +421,3 @@ int DesktopDuplication::GetFormatBytesPerPixel(DXGI_FORMAT format) const
 	default: errorFunc(E_NOTIMPL);
 	}
 }
-
-//static void DiaryProc()
-//{
-//	int outputFileIndex{};
-//	ofstream outputFile(GetDiaryFilePath(outputFileIndex));
-//	int frameCount = 0;
-//
-//	UINT metadataSize = 0;
-//	vector<RECT> dirtyRects;
-//	while (true)
-//	{
-//		{
-//			DXGI_OUTDUPL_FRAME_INFO frameInfo{};
-//
-//			D3D11_TEXTURE2D_DESC desc{};
-//			CComPtr<ID3D11Texture2D> lastFrameTexture;
-//			{
-//				CComPtr<IDXGIResource> desktopResource;
-//				auto hr = outputDuplication->AcquireNextFrame(500, &frameInfo, &desktopResource);
-//				if (hr == DXGI_ERROR_WAIT_TIMEOUT)
-//					continue;
-//				CHECK_HR(hr);
-//
-//				CHECK_HR(desktopResource.QueryInterface(&lastFrameTexture));
-//				lastFrameTexture->GetDesc(&desc);
-//			}
-//
-//			assert(desc.Format == DXGI_FORMAT_B8G8R8A8_UNORM || desc.Format == DXGI_FORMAT_R8G8B8A8_UNORM
-//				|| desc.Format == DXGI_FORMAT_R16G16B16A16_FLOAT);
-//
-//			CComPtr<ID3D11Texture2D> stagingTexture;
-//
-//			if (frameInfo.TotalMetadataBufferSize > 0)
-//			{
-//				if (frameInfo.TotalMetadataBufferSize > metadataSize)
-//					dirtyRects.resize((metadataSize = frameInfo.TotalMetadataBufferSize) / sizeof(RECT));
-//
-//				UINT dirtyRectSizeRequired = metadataSize;
-//				CHECK_HR(outputDuplication->GetFrameDirtyRects(metadataSize, dirtyRects.data(), &dirtyRectSizeRequired));
-//			}
-//
-//			GetWindowRect(hWnd, &rect);
-//
-//			// remove any dirty rects that are outside the window
-//			dirtyRects.erase(remove_if(dirtyRects.begin(), dirtyRects.end(), [&](const RECT& r) {
-//				return r.left >= rect.right || r.right <= rect.left || r.top >= rect.bottom || r.bottom <= rect.top;
-//				}), dirtyRects.end());
-//
-//			if (dirtyRects.size() == 0 && frameCount)
-//			{
-//				// no dirty rects, we don't need a keyframe, just skip
-//				CHECK_HR(outputDuplication->ReleaseFrame());
-//				continue;
-//			}
-//
-//			// copy the texture to a staging texture
-//			D3D11_MAPPED_SUBRESOURCE mappedResource;
-//			D3D11_TEXTURE2D_DESC stagingDesc = desc;
-//			stagingDesc.Usage = D3D11_USAGE_STAGING;
-//			stagingDesc.BindFlags = 0;
-//			stagingDesc.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
-//			stagingDesc.MiscFlags = 0;
-//
-//			CHECK_HR(d3d11Device->CreateTexture2D(&stagingDesc, nullptr, &stagingTexture));
-//			immediateContext->CopyResource(stagingTexture, lastFrameTexture);
-//			lastFrameTexture.Release();
-//			CHECK_HR(outputDuplication->ReleaseFrame());
-//
-//			CHECK_HR(immediateContext->Map(stagingTexture, 0, D3D11_MAP_READ, 0, &mappedResource));
-//
-//			bool isFullScreenDirty = dirtyRects.size() == 1 && dirtyRects[0].left == rect.left &&
-//				dirtyRects[0].top == rect.top && dirtyRects[0].right == rect.right && dirtyRects[0].bottom == rect.bottom;
-//
-//			if (frameCount == 0 || isFullScreenDirty)
-//			{
-//				auto dim = rect.right - rect.left;
-//				outputFile.write((const char*)&dim, sizeof(dim));
-//				dim = rect.bottom - rect.top;
-//				outputFile.write((const char*)&dim, sizeof(dim));
-//				outputFile.write((const char*)&desc.Format, sizeof(desc.Format));
-//				size_t zeroCount = 0;
-//				outputFile.write((const char*)&zeroCount, sizeof(zeroCount));
-//
-//				// dump the entire window
-//				for (auto y = rect.top; y < rect.bottom; ++y)
-//					outputFile.write(
-//						(const char*)(mappedResource.pData) + y * mappedResource.RowPitch + rect.left * 4,
-//						(rect.right - rect.left) * 4);
-//			}
-//			else if (dirtyRects.size() > 0)
-//			{
-//				auto dim = rect.right - rect.left;
-//				outputFile.write((const char*)&dim, sizeof(dim));
-//				dim = rect.bottom - rect.top;
-//				outputFile.write((const char*)&dim, sizeof(dim));
-//				outputFile.write((const char*)&desc.Format, sizeof(desc.Format));
-//				size_t dirtyRectCount = dirtyRects.size();
-//				outputFile.write((const char*)&dirtyRectCount, sizeof(dirtyRectCount));
-//
-//				for (auto& dirtyRect : dirtyRects)
-//				{
-//					outputFile.write((const char*)&dirtyRect.left, sizeof(dirtyRect.left));
-//					outputFile.write((const char*)&dirtyRect.top, sizeof(dirtyRect.top));
-//					outputFile.write((const char*)&dirtyRect.right, sizeof(dirtyRect.right));
-//					outputFile.write((const char*)&dirtyRect.bottom, sizeof(dirtyRect.bottom));
-//
-//					for (auto y = dirtyRect.top; y < dirtyRect.bottom; ++y)
-//						outputFile.write(
-//							(const char*)(mappedResource.pData) + y * mappedResource.RowPitch + dirtyRect.left * 4,
-//							(dirtyRect.right - dirtyRect.left) * 4);
-//				}
-//			}
-//
-//			immediateContext->Unmap(stagingTexture, 0);
-//			++frameCount;
-//		}
-//
-//	}
-//}

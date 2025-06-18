@@ -26,7 +26,7 @@ public static partial class DearDiaryToday
     
     [UnmanagedFunctionPointer(CallingConvention.StdCall)]
     delegate void ExportDiaryVideoCompletion(IntPtr arg);
-
+    
     [DllImport("deardiarytoday.dll", EntryPoint = "ExportDiaryVideo", CallingConvention = CallingConvention.StdCall)]
     static extern void RawExportDiaryVideo([MarshalAs(UnmanagedType.LPWStr)] string outputFileName,
         ExportDiaryVideoCompletion completion, IntPtr completionArg);
