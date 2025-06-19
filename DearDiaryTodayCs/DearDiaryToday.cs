@@ -23,26 +23,31 @@ public static partial class DearDiaryToday
     {
         RawStartDiary(new(hWnd), errorCallback);
     }
-    
+
     [UnmanagedFunctionPointer(CallingConvention.StdCall)]
-    delegate void ExportDiaryVideoCompletion(IntPtr arg);
-    
+    delegate void ExportDiaryVideoCompletion(float percentDone, IntPtr arg);
+
     [DllImport("deardiarytoday.dll", EntryPoint = "ExportDiaryVideo", CallingConvention = CallingConvention.StdCall)]
     static extern void RawExportDiaryVideo([MarshalAs(UnmanagedType.LPWStr)] string outputFileName,
         ExportDiaryVideoCompletion completion, IntPtr completionArg);
 
-    static readonly Dictionary<int, TaskCompletionSource<bool>> exportDiaryVideoTCS = [];
+    static readonly Dictionary<int, (TaskCompletionSource<bool> tcs, Action<float> progress)> exportDiaryVideoTCS = [];
     static int nextExportDiaryVideoCompletionId = 0;
-    static readonly ExportDiaryVideoCompletion exportDiaryVideoCompletion = arg =>
+    static readonly ExportDiaryVideoCompletion exportDiaryVideoCompletion = (percentDone, arg) =>
     {
-        exportDiaryVideoTCS[arg.ToInt32()].SetResult(true);
-        exportDiaryVideoTCS.Remove(arg.ToInt32());
+        if (percentDone < 0)
+        {
+            exportDiaryVideoTCS[arg.ToInt32()].tcs.SetResult(true);
+            exportDiaryVideoTCS.Remove(arg.ToInt32());
+        }
+        else
+            exportDiaryVideoTCS[arg.ToInt32()].progress(percentDone);
     };
-    public static Task ExportDiaryVideo(string outputFileName)
+    public static Task ExportDiaryVideo(string outputFileName, Action<float> progress)
     {
         var tcs = new TaskCompletionSource<bool>();
         var id = Interlocked.Increment(ref nextExportDiaryVideoCompletionId);
-        exportDiaryVideoTCS[id] = tcs;
+        exportDiaryVideoTCS[id] = (tcs, progress);
 
         new Thread(() =>
         {

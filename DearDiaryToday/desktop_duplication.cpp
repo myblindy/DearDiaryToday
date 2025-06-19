@@ -21,8 +21,7 @@ void StartDiary(HWND _hWnd, ErrorFunc _errorFunc)
 
 void ExportDiaryVideo(LPWSTR outputPath, ExportDiaryVideoCompletion completion, void* completionArg)
 {
-	desktopDuplicationInstance->ExportVideo(outputPath).Completed(
-		[=](auto&&, auto&&) { completion(completionArg); });
+	desktopDuplicationInstance->ExportVideo(outputPath, completion, completionArg);
 }
 
 #define CHECK_PTR(ptr) do { if (!ptr) { errorFunc(S_FALSE); return; } } while (false)
@@ -89,7 +88,7 @@ static int roundUp(int numToRound, int multiple)
 	return (numToRound + multiple - 1) & -multiple;
 }
 
-IAsyncAction DesktopDuplication::ExportVideo(wstring outputPath)
+IAsyncAction DesktopDuplication::ExportVideo(wstring outputPath, ExportDiaryVideoCompletion completion, void* completionArg)
 {
 	EnterCriticalSection(&fileAccessCriticalSection);
 	// close the current output file, and rename them to temporary names so we can parse them in peace
@@ -126,7 +125,8 @@ IAsyncAction DesktopDuplication::ExportVideo(wstring outputPath)
 	LeaveCriticalSection(&fileAccessCriticalSection);
 
 	// read the max frame size
-	auto maxFrameSize = GetMaximumSavedFrameSize(diaryFilePaths);
+	int frameCount{};
+	auto maxFrameSize = GetMaximumSavedFrameSize(diaryFilePaths, frameCount);
 
 	// we must convert RGB32 to NV12
 	com_ptr<IMFTransform> frameTransform;
@@ -207,6 +207,7 @@ IAsyncAction DesktopDuplication::ExportVideo(wstring outputPath)
 		CHECK_HR_CR(MFSetAttributeRatio(mediaTypeOut.get(), MF_MT_FRAME_RATE, 30, 1)); // 30 FPS
 		CHECK_HR_CR(MFSetAttributeRatio(mediaTypeOut.get(), MF_MT_PIXEL_ASPECT_RATIO, 1, 1));
 		CHECK_HR_CR(mediaTypeOut->SetUINT32(MF_MT_INTERLACE_MODE, MFVideoInterlace_Progressive));
+		CHECK_HR_CR(mediaTypeOut->SetUINT32(MF_MT_ALL_SAMPLES_INDEPENDENT, TRUE));
 
 		CHECK_HR_CR(MFCreateMediaType(mediaTypeIn.put()));
 		CHECK_HR_CR(mediaTypeIn->SetGUID(MF_MT_MAJOR_TYPE, MFMediaType_Video));
@@ -221,7 +222,7 @@ IAsyncAction DesktopDuplication::ExportVideo(wstring outputPath)
 	}
 
 	int64_t frameTimePointNs{};
-	vector<char> frameDataBuffer;
+	int frameIndex{};
 	for (auto& diaryFilePath : diaryFilePaths)
 	{
 		ifstream inputFile(diaryFilePath, ios::binary | ios::in);
@@ -242,10 +243,6 @@ IAsyncAction DesktopDuplication::ExportVideo(wstring outputPath)
 			frameTimePointNs += frameTimeNs;
 			auto bpp = GetFormatBytesPerPixel(format);
 
-			frameDataBuffer.clear();
-			frameDataBuffer.resize(width * roundUp(height, 2) * bpp);
-			inputFile.read(frameDataBuffer.data(), width * height * bpp);
-
 			{
 				// MFT transform
 				com_ptr<IMFSample> sample;
@@ -257,12 +254,14 @@ IAsyncAction DesktopDuplication::ExportVideo(wstring outputPath)
 
 				BYTE* data = nullptr;
 				CHECK_HR_CR(mediaBuffer->Lock(&data, nullptr, nullptr));
-				memcpy(data, frameDataBuffer.data(), width * height * bpp);
+				inputFile.read((char*)data, width * height * bpp);
 				CHECK_HR_CR(mediaBuffer->Unlock());
 				CHECK_HR_CR(mediaBuffer->SetCurrentLength(width * roundUp(height, 2) * bpp));
 
 				CHECK_HR_CR(sample->AddBuffer(mediaBuffer.get()));
 				CHECK_HR_CR(frameTransform->ProcessInput(inputStreams[0], sample.get(), 0));
+
+				completion(++frameIndex / (float)frameCount, completionArg);
 			}
 
 			// samples
@@ -279,6 +278,8 @@ IAsyncAction DesktopDuplication::ExportVideo(wstring outputPath)
 	CHECK_HR_CR(WriteTransformOutputSamplesToSink(frameTransform, sinkWriter, mftOutputData));
 
 	sinkWriter->Finalize();
+
+	completion(-1, completionArg); // signal completion
 }
 
 DirectXPixelFormat DesktopDuplication::DxgiPixelFormatToRtPixelFormat(DXGI_FORMAT dxgiFormat) const
@@ -380,7 +381,7 @@ void DesktopDuplication::DumpFrameData(const D3D11_MAPPED_SUBRESOURCE& mappedRes
 		outputFile.write(reinterpret_cast<const char*>(&time_span_ns), sizeof(time_span_ns));
 
 		for (int y = 0; y < newFrameSize.Height; ++y)
-			outputFile.write(reinterpret_cast<const char*>(mappedResource.pData) + y * mappedResource.RowPitch,
+			outputFile.write(reinterpret_cast<const char*>(mappedResource.pData) + (newFrameSize.Height - y - 1) * mappedResource.RowPitch,
 				newFrameSize.Width * bytesPerPixel);
 		LeaveCriticalSection(&fileAccessCriticalSection);
 
@@ -393,9 +394,10 @@ void DesktopDuplication::DumpFrameData(const D3D11_MAPPED_SUBRESOURCE& mappedRes
 	}
 }
 
-Windows::Graphics::SizeInt32 DesktopDuplication::GetMaximumSavedFrameSize(const vector<filesystem::path>& partPaths) const
+Windows::Graphics::SizeInt32 DesktopDuplication::GetMaximumSavedFrameSize(const vector<filesystem::path>& partPaths, int& frameCount) const
 {
 	SizeInt32 maxSize{};
+	frameCount = 0;
 
 	for (const auto& partPath : partPaths)
 	{
@@ -417,6 +419,7 @@ Windows::Graphics::SizeInt32 DesktopDuplication::GetMaximumSavedFrameSize(const 
 
 			maxSize.Width = max(maxSize.Width, size.Width);
 			maxSize.Height = max(maxSize.Height, size.Height);
+			++frameCount;
 		}
 	}
 

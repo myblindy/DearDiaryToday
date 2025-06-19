@@ -18,7 +18,8 @@
         <Rectangle HorizontalAlignment="Left" Height="136" Margin="400,142,0,0" Stroke="Black" VerticalAlignment="Top" Width="266"/>
         <TextBlock HorizontalAlignment="Left" Margin="294,157,0,0" TextWrapping="Wrap" Text="TextBlock" VerticalAlignment="Top"/>
 
-        <CheckBox x:Name="AnimateCheckBox" Content="Animate" HorizontalAlignment="Left" Margin="98,338,0,0" VerticalAlignment="Top" IsChecked="True"/>
+        <CheckBox x:Name="AnimateCheckBox" Content="Animate" HorizontalAlignment="Left" Margin="98,338,0,0" VerticalAlignment="Top"/>
+        <Button Content="Save" HorizontalAlignment="Left" Margin="400,94,0,0" VerticalAlignment="Top" Click="SaveClicked"/>
         <Rectangle x:Name="Bouncer" HorizontalAlignment="Left" Height="30" Margin="179,210,0,0" VerticalAlignment="Top" Width="30"
                    Visibility="{Binding ElementName=AnimateCheckBox, Path=IsChecked, Converter={StaticResource BooleanToVisibilityConverter}}"
                    RenderTransformOrigin="0.5,0.5" Fill="BlueViolet" StrokeThickness="5" Stroke="DarkBlue">
@@ -26,7 +27,16 @@
                 <RotateTransform x:Name="BouncerRotateTransform"/>
             </Rectangle.RenderTransform>
         </Rectangle>
-        <Button Content="Save" HorizontalAlignment="Left" Margin="400,94,0,0" VerticalAlignment="Top" Click="SaveClicked"/>
+        <ProgressBar x:Name="SaveProgress" Margin="324,202,67,212" RenderTransformOrigin="0.5,0.5" Visibility="Collapsed" Maximum="1">
+            <ProgressBar.RenderTransform>
+                <TransformGroup>
+                    <ScaleTransform/>
+                    <SkewTransform/>
+                    <RotateTransform Angle="-57.636"/>
+                    <TranslateTransform/>
+                </TransformGroup>
+            </ProgressBar.RenderTransform>
+        </ProgressBar>
 
     </Grid>
 </Window>

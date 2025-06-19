@@ -4,7 +4,7 @@ extern "C" {
 	typedef void (*ErrorFunc)(HRESULT);
 	void __declspec(dllexport) __stdcall StartDiary(HWND, ErrorFunc);
 
-	typedef void (*ExportDiaryVideoCompletion)(void*);
+	typedef void (*ExportDiaryVideoCompletion)(float, void*);
 	void __declspec(dllexport) __stdcall  ExportDiaryVideo(LPWSTR, ExportDiaryVideoCompletion, void*);
 }
 
@@ -12,12 +12,12 @@ constexpr int MAX_DIARY_FILES = 2;
 constexpr int MAX_FRAME_RATE = 30;
 constexpr int MAX_FRAMES_PER_DIARY_FILE = 10 * MAX_FRAME_RATE;
 
-constexpr int DIARY_VIDEO_BITRATE = 30000;
+constexpr int DIARY_VIDEO_BITRATE = 30000000;
 
 struct DesktopDuplication : winrt::implements<DesktopDuplication, ::IInspectable>
 {
 	DesktopDuplication(HWND hWnd, ErrorFunc errorFunc);
-	winrt::Windows::Foundation::IAsyncAction ExportVideo(std::wstring);
+	winrt::Windows::Foundation::IAsyncAction ExportVideo(std::wstring, ExportDiaryVideoCompletion, void*);
 
 private:
 	HWND hWnd;
@@ -53,7 +53,7 @@ private:
 	void OpenNextOutputFile();
 	void DumpFrameData(const D3D11_MAPPED_SUBRESOURCE&, DXGI_FORMAT, winrt::Windows::Graphics::SizeInt32);
 
-	winrt::Windows::Graphics::SizeInt32 GetMaximumSavedFrameSize(const std::vector<std::filesystem::path>& partPaths) const;
+	winrt::Windows::Graphics::SizeInt32 GetMaximumSavedFrameSize(const std::vector<std::filesystem::path>& partPaths, int& frameCount) const;
 
 	HRESULT WriteTransformOutputSamplesToSink(winrt::com_ptr<IMFTransform>& frameTransform,
 		winrt::com_ptr<IMFSinkWriter>& sinkWriter, MFT_OUTPUT_DATA_BUFFER& mftOutputData);

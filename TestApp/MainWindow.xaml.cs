@@ -1,4 +1,5 @@
 ﻿using DearDiaryTodayCs;
+using System.Diagnostics;
 using System.Numerics;
 using System.Windows;
 using System.Windows.Interop;
@@ -12,7 +13,7 @@ public partial class MainWindow : Window
     public MainWindow()
     {
         InitializeComponent();
-        
+
         Loaded += (s, e) =>
         {
             async Task BounceAsync()
@@ -43,8 +44,14 @@ public partial class MainWindow : Window
         DearDiaryToday.StartDiary(new WindowInteropHelper(this).Handle);
     }
 
-    private void SaveClicked(object sender, RoutedEventArgs e)
+    private async void SaveClicked(object sender, RoutedEventArgs e)
     {
-        DearDiaryToday.ExportDiaryVideo($".diary/{DateTime.Now:yyyyMMddHHmmss}.mp4");
+        var outputFileName = $".diary\\{DateTime.Now:yyyyMMddHHmmss}.mp4";
+        await DearDiaryToday.ExportDiaryVideo(outputFileName, progress => Dispatcher.Invoke(() =>
+        {
+            SaveProgress.Value = progress;
+            SaveProgress.Visibility = progress >= 0 ? Visibility.Visible : Visibility.Collapsed;
+        }));
+        Process.Start(new ProcessStartInfo(outputFileName) { UseShellExecute = true });
     }
 }
