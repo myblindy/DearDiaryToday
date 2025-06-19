@@ -24,6 +24,18 @@ void ExportDiaryVideo(LPWSTR outputPath, ExportDiaryVideoCompletion completion, 
 	desktopDuplicationInstance->ExportVideo(outputPath, completion, completionArg);
 }
 
+void __stdcall StopDiary(StopDiaryCompletion completion, void* completionArg)
+{
+	if (!desktopDuplicationInstance)
+		return; // nothing to stop
+
+	thread([=] {
+		desktopDuplicationInstance->StopDiaryAndWait();
+		desktopDuplicationInstance = nullptr;
+		completion(completionArg);
+		}).detach();
+}
+
 #define CHECK_PTR(ptr) do { if (!ptr) { errorFunc(S_FALSE); return; } } while (false)
 #define CHECK_HR(hr) do { if (FAILED(hr)) { errorFunc(hr); return; } } while (false)
 #define CHECK_HR_RET(hr) do { if (FAILED(hr)) { errorFunc(hr); return hr; } } while (false)
@@ -280,6 +292,25 @@ IAsyncAction DesktopDuplication::ExportVideo(wstring outputPath, ExportDiaryVide
 	sinkWriter->Finalize();
 
 	completion(-1, completionArg); // signal completion
+}
+
+void DesktopDuplication::StopDiaryAndWait()
+{
+	captureSession.Close();
+	outputFile.close();
+
+	for (int diaryIdx = 0;; ++diaryIdx)
+	{
+		auto diaryFilePath = GetDiaryFilePath(diaryIdx, false);
+		if (!filesystem::exists(diaryFilePath))
+			break; // no more diary files
+
+		error_code ec;
+		while (!filesystem::remove(diaryFilePath, ec))
+		{
+			// keep retrying to delete these files until the capture is done with them
+		}
+	}
 }
 
 DirectXPixelFormat DesktopDuplication::DxgiPixelFormatToRtPixelFormat(DXGI_FORMAT dxgiFormat) const

@@ -55,4 +55,28 @@ public static partial class DearDiaryToday
         }).Start();
         return tcs.Task;
     }
+
+    [UnmanagedFunctionPointer(CallingConvention.StdCall)]
+    delegate void StopDiaryCompletion(IntPtr arg);
+
+    static int nextStopDiaryCompletionId = 0;
+    static readonly Dictionary<int, TaskCompletionSource<bool>> stopDiaryTCS = [];
+
+    [DllImport("deardiarytoday.dll", EntryPoint = "StopDiary", CallingConvention = CallingConvention.StdCall)]
+    static extern void RawStopDiary(StopDiaryCompletion completion, IntPtr completionArg);
+
+    static readonly StopDiaryCompletion stopDiaryCompletion = arg =>
+    {
+        stopDiaryTCS[arg.ToInt32()].SetResult(true);
+        stopDiaryTCS.Remove(arg.ToInt32());
+    };
+    public static Task StopDiary()
+    {
+        var tcs = new TaskCompletionSource<bool>();
+        var id = Interlocked.Increment(ref nextStopDiaryCompletionId);
+        stopDiaryTCS[id] = tcs;
+
+        RawStopDiary(stopDiaryCompletion, new(id));
+        return tcs.Task;
+    }
 }

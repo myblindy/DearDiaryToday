@@ -54,4 +54,16 @@ public partial class MainWindow : Window
         }));
         Process.Start(new ProcessStartInfo(outputFileName) { UseShellExecute = true });
     }
+
+    bool OkToClose;
+    private async void WindowClosing(object sender, System.ComponentModel.CancelEventArgs e)
+    {
+        if (!OkToClose)
+        {
+            e.Cancel = true;
+            await DearDiaryToday.StopDiary();
+            OkToClose = true;
+            Close();
+        }
+    }
 }

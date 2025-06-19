@@ -6,6 +6,9 @@ extern "C" {
 
 	typedef void (*ExportDiaryVideoCompletion)(float, void*);
 	void __declspec(dllexport) __stdcall  ExportDiaryVideo(LPWSTR, ExportDiaryVideoCompletion, void*);
+
+	typedef void (*StopDiaryCompletion)(void*);
+	void __declspec(dllexport) __stdcall StopDiary(StopDiaryCompletion, void*);
 }
 
 constexpr int MAX_DIARY_FILES = 2;
@@ -18,6 +21,7 @@ struct DesktopDuplication : winrt::implements<DesktopDuplication, ::IInspectable
 {
 	DesktopDuplication(HWND hWnd, ErrorFunc errorFunc);
 	winrt::Windows::Foundation::IAsyncAction ExportVideo(std::wstring, ExportDiaryVideoCompletion, void*);
+	void StopDiaryAndWait();
 
 private:
 	HWND hWnd;
