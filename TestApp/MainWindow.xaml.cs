@@ -47,7 +47,7 @@ public partial class MainWindow : Window
     private async void SaveClicked(object sender, RoutedEventArgs e)
     {
         var outputFileName = $".diary\\{DateTime.Now:yyyyMMddHHmmss}.mp4";
-        await DearDiaryToday.ExportDiaryVideo(outputFileName, progress => Dispatcher.Invoke(() =>
+        await DearDiaryToday.ExportDiaryVideo(outputFileName, progress => Dispatcher.BeginInvoke(() =>
         {
             SaveProgress.Value = progress;
             SaveProgress.Visibility = progress >= 0 ? Visibility.Visible : Visibility.Collapsed;

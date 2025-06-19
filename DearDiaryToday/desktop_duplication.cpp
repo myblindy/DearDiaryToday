@@ -153,7 +153,7 @@ IAsyncAction DesktopDuplication::ExportVideo(wstring outputPath, ExportDiaryVide
 		CHECK_HR_CR(MFTEnumEx(MFT_CATEGORY_VIDEO_PROCESSOR,
 			MFT_ENUM_FLAG_TRANSCODE_ONLY | MFT_ENUM_FLAG_SORTANDFILTER,
 			&inputType, &outputType, &mftActivators, &mftActivatorsCount));
-		CHECK_HR_CR(mftActivators[0]->ActivateObject(guid_of<IMFTransform>(), frameTransform.put_void()));
+		CHECK_HR_CR(mftActivators[0]->ActivateObject(IID_PPV_ARGS(frameTransform.put())));
 		CoTaskMemFree(mftActivators);
 	}
 	vector<DWORD> inputStreams, outputStreams;
@@ -335,7 +335,7 @@ void DesktopDuplication::OnFrameArrived(Direct3D11CaptureFramePool const& sender
 	com_ptr<ID3D11Texture2D> newFrameTexture;
 	{
 		auto access = newFrameSurface.as<IDirect3DDxgiInterfaceAccess>();
-		CHECK_HR(access->GetInterface(guid_of<ID3D11Texture2D>(), newFrameTexture.put_void()));
+		CHECK_HR(access->GetInterface(IID_PPV_ARGS(newFrameTexture.put())));
 	}
 
 	// create a staging texture
