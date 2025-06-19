@@ -27,6 +27,7 @@ void ExportDiaryVideo(LPWSTR outputPath, ExportDiaryVideoCompletion completion, 
 
 #define CHECK_PTR(ptr) do { if (!ptr) { errorFunc(S_FALSE); return; } } while (false)
 #define CHECK_HR(hr) do { if (FAILED(hr)) { errorFunc(hr); return; } } while (false)
+#define CHECK_HR_RET(hr) do { if (FAILED(hr)) { errorFunc(hr); return hr; } } while (false)
 #define CHECK_HR_CR(hr) do { if (FAILED(hr)) { errorFunc(hr); co_return; } } while (false)
 
 DesktopDuplication::DesktopDuplication(HWND hWnd, ErrorFunc errorFunc)
@@ -135,13 +136,13 @@ IAsyncAction DesktopDuplication::ExportVideo(wstring outputPath)
 		inputType.guidSubtype = MFVideoFormat_RGB32;
 		outputType.guidMajorType = MFMediaType_Video;
 		outputType.guidSubtype = MFVideoFormat_NV12;
-		CLSID* mftClsid{};
-		UINT32 mftClsidCount{};
-		CHECK_HR_CR(MFTEnum(MFT_CATEGORY_VIDEO_PROCESSOR, 0, &inputType, &outputType, nullptr, &mftClsid, &mftClsidCount));
-		CHECK_HR_CR(CoCreateInstance(*mftClsid, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(frameTransform.put())));
-		CoTaskMemFree(mftClsid);
-
-		frameTransform->SetInputType()
+		IMFActivate** mftActivators{};
+		UINT32 mftActivatorsCount{};
+		CHECK_HR_CR(MFTEnumEx(MFT_CATEGORY_VIDEO_PROCESSOR,
+			MFT_ENUM_FLAG_TRANSCODE_ONLY | MFT_ENUM_FLAG_SORTANDFILTER,
+			&inputType, &outputType, &mftActivators, &mftActivatorsCount));
+		CHECK_HR_CR(mftActivators[0]->ActivateObject(guid_of<IMFTransform>(), frameTransform.put_void()));
+		CoTaskMemFree(mftActivators);
 	}
 	vector<DWORD> inputStreams, outputStreams;
 	{
@@ -158,6 +159,22 @@ IAsyncAction DesktopDuplication::ExportVideo(wstring outputPath)
 		}
 		else
 			CHECK_HR_CR(hr);
+
+		com_ptr<IMFMediaType> mediaTypeOut, mediaTypeIn;
+		CHECK_HR_CR(MFCreateMediaType(mediaTypeOut.put()));
+		CHECK_HR_CR(mediaTypeOut->SetGUID(MF_MT_MAJOR_TYPE, MFMediaType_Video));
+		CHECK_HR_CR(mediaTypeOut->SetGUID(MF_MT_SUBTYPE, MFVideoFormat_NV12));
+		CHECK_HR_CR(MFSetAttributeSize(mediaTypeOut.get(), MF_MT_FRAME_SIZE, maxFrameSize.Width, roundUp(maxFrameSize.Height, 2)));
+		CHECK_HR_CR(MFSetAttributeRatio(mediaTypeOut.get(), MF_MT_PIXEL_ASPECT_RATIO, 1, 1));
+
+		CHECK_HR_CR(MFCreateMediaType(mediaTypeIn.put()));
+		CHECK_HR_CR(mediaTypeIn->SetGUID(MF_MT_MAJOR_TYPE, MFMediaType_Video));
+		CHECK_HR_CR(mediaTypeIn->SetGUID(MF_MT_SUBTYPE, MFVideoFormat_RGB32));
+		CHECK_HR_CR(MFSetAttributeSize(mediaTypeIn.get(), MF_MT_FRAME_SIZE, maxFrameSize.Width, roundUp(maxFrameSize.Height, 2)));
+		CHECK_HR_CR(MFSetAttributeRatio(mediaTypeIn.get(), MF_MT_PIXEL_ASPECT_RATIO, 1, 1));
+
+		frameTransform->SetInputType(inputStreams[0], mediaTypeIn.get(), 0);
+		frameTransform->SetOutputType(outputStreams[0], mediaTypeOut.get(), 0);
 	}
 
 	MFT_OUTPUT_STREAM_INFO outputStreamInfo{};
@@ -209,62 +226,57 @@ IAsyncAction DesktopDuplication::ExportVideo(wstring outputPath)
 	{
 		ifstream inputFile(diaryFilePath, ios::binary | ios::in);
 
-		int width{}, height{};
-		DXGI_FORMAT format{};
-		hr_time_point::rep frameTimeNs{};
-		inputFile.read(reinterpret_cast<char*>(&width), sizeof(width));
-		inputFile.read(reinterpret_cast<char*>(&height), sizeof(height));
-		inputFile.read(reinterpret_cast<char*>(&format), sizeof(format));
-		inputFile.read(reinterpret_cast<char*>(&frameTimeNs), sizeof(frameTimeNs));
-
-		// advance the time
-		frameTimePointNs += frameTimeNs;
-		auto bpp = GetFormatBytesPerPixel(format);
-
-		frameDataBuffer.clear();
-		frameDataBuffer.resize(width * roundUp(height, 2) * bpp);
-		inputFile.read(frameDataBuffer.data(), width * height * bpp);
-
+		while (true)
 		{
-			// MFT transform
-			com_ptr<IMFSample> sample;
-			CHECK_HR_CR(MFCreateSample(sample.put()));
+			int width{}, height{};
+			DXGI_FORMAT format{};
+			hr_time_point::rep frameTimeNs{};
+			inputFile.read(reinterpret_cast<char*>(&width), sizeof(width));
+			if (inputFile.eof())
+				break; // end of file
+			inputFile.read(reinterpret_cast<char*>(&height), sizeof(height));
+			inputFile.read(reinterpret_cast<char*>(&format), sizeof(format));
+			inputFile.read(reinterpret_cast<char*>(&frameTimeNs), sizeof(frameTimeNs));
 
-			com_ptr<IMFMediaBuffer> mediaBuffer;
-			CHECK_HR_CR(MFCreateAlignedMemoryBuffer(width * roundUp(height, 2) * bpp, sizeof(void*), mediaBuffer.put()));
+			// advance the time
+			frameTimePointNs += frameTimeNs;
+			auto bpp = GetFormatBytesPerPixel(format);
 
-			BYTE* data = nullptr;
-			CHECK_HR_CR(mediaBuffer->Lock(&data, nullptr, nullptr));
-			memcpy(data, frameDataBuffer.data(), width * height * bpp);
-			CHECK_HR_CR(mediaBuffer->Unlock());
-			CHECK_HR_CR(mediaBuffer->SetCurrentLength(width * roundUp(height, 2) * bpp));
+			frameDataBuffer.clear();
+			frameDataBuffer.resize(width * roundUp(height, 2) * bpp);
+			inputFile.read(frameDataBuffer.data(), width * height * bpp);
 
-			CHECK_HR_CR(sample->AddBuffer(mediaBuffer.get()));
-			CHECK_HR_CR(frameTransform->ProcessInput(inputStreams[0], sample.get(), 0));
-		}
-
-
-		{
-			// samples
-		nextSample:
-
-			DWORD outputStatus = 0;
-			auto outputHr = frameTransform->ProcessOutput(0, 1, &mftOutputData, &outputStatus);
-			if (outputHr == S_OK)
 			{
-				CHECK_HR_CR(outputSample->SetSampleTime(frameTimePointNs / 100));
-				CHECK_HR_CR(outputSample->SetSampleDuration(33 * 10000));
-				CHECK_HR_CR(sinkWriter->WriteSample(streamIndex, outputSample.get()));
-				goto nextSample;
+				// MFT transform
+				com_ptr<IMFSample> sample;
+				CHECK_HR_CR(MFCreateSample(sample.put()));
+				CHECK_HR_CR(sample->SetSampleTime(frameTimePointNs / 100));
+
+				com_ptr<IMFMediaBuffer> mediaBuffer;
+				CHECK_HR_CR(MFCreateAlignedMemoryBuffer(width * roundUp(height, 2) * bpp, sizeof(void*), mediaBuffer.put()));
+
+				BYTE* data = nullptr;
+				CHECK_HR_CR(mediaBuffer->Lock(&data, nullptr, nullptr));
+				memcpy(data, frameDataBuffer.data(), width * height * bpp);
+				CHECK_HR_CR(mediaBuffer->Unlock());
+				CHECK_HR_CR(mediaBuffer->SetCurrentLength(width * roundUp(height, 2) * bpp));
+
+				CHECK_HR_CR(sample->AddBuffer(mediaBuffer.get()));
+				CHECK_HR_CR(frameTransform->ProcessInput(inputStreams[0], sample.get(), 0));
 			}
-			else if (outputHr == MF_E_TRANSFORM_NEED_MORE_INPUT)
-				continue;
-			else if (FAILED(outputHr))
-				CHECK_HR_CR(outputHr);
-			else
-				errorFunc(E_NOTIMPL); // unexpected output status
+
+			// samples
+			CHECK_HR_CR(WriteTransformOutputSamplesToSink(frameTransform, sinkWriter, mftOutputData));
 		}
+
+		// delete the part file
+		inputFile.close();
+		filesystem::remove(diaryFilePath, ec);
 	}
+
+	// drain the MFT
+	frameTransform->ProcessMessage(MFT_MESSAGE_COMMAND_DRAIN, 0);
+	CHECK_HR_CR(WriteTransformOutputSamplesToSink(frameTransform, sinkWriter, mftOutputData));
 
 	sinkWriter->Finalize();
 }
@@ -409,6 +421,25 @@ Windows::Graphics::SizeInt32 DesktopDuplication::GetMaximumSavedFrameSize(const 
 	}
 
 	return maxSize;
+}
+
+HRESULT DesktopDuplication::WriteTransformOutputSamplesToSink(com_ptr<IMFTransform>& frameTransform,
+	com_ptr<IMFSinkWriter>& sinkWriter, MFT_OUTPUT_DATA_BUFFER& mftOutputData)
+{
+nextSample:
+	DWORD outputStatus = 0;
+	auto outputHr = frameTransform->ProcessOutput(0, 1, &mftOutputData, &outputStatus);
+	if (outputHr == S_OK)
+	{
+		CHECK_HR_RET(sinkWriter->WriteSample(mftOutputData.dwStreamID, mftOutputData.pSample));
+		goto nextSample;
+	}
+	else if (outputHr == MF_E_TRANSFORM_NEED_MORE_INPUT)
+		return S_OK;
+	else if (FAILED(outputHr))
+		CHECK_HR_RET(outputHr);
+
+	return E_NOTIMPL;
 }
 
 int DesktopDuplication::GetFormatBytesPerPixel(DXGI_FORMAT format) const

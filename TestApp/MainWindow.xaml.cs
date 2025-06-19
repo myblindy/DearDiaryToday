@@ -12,7 +12,7 @@ public partial class MainWindow : Window
     public MainWindow()
     {
         InitializeComponent();
-
+        
         Loaded += (s, e) =>
         {
             async Task BounceAsync()

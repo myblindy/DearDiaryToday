@@ -54,4 +54,7 @@ private:
 	void DumpFrameData(const D3D11_MAPPED_SUBRESOURCE&, DXGI_FORMAT, winrt::Windows::Graphics::SizeInt32);
 
 	winrt::Windows::Graphics::SizeInt32 GetMaximumSavedFrameSize(const std::vector<std::filesystem::path>& partPaths) const;
+
+	HRESULT WriteTransformOutputSamplesToSink(winrt::com_ptr<IMFTransform>& frameTransform,
+		winrt::com_ptr<IMFSinkWriter>& sinkWriter, MFT_OUTPUT_DATA_BUFFER& mftOutputData);
 };
