@@ -4,12 +4,15 @@
 
 class LzmaEncoder final
 {
-	const std::ostream* ostream;
+	std::unique_ptr<std::ostream> ostream;
+	std::vector<BYTE> inBuffer, outBuffer;
 	ErrorFunc errorFunc;
 	lzma_stream stream = LZMA_STREAM_INIT;
 
+	void CheckOutput();
+
 public:
-	LzmaEncoder(const std::ostream&, const ErrorFunc);
+	LzmaEncoder(std::unique_ptr<std::ostream>, const ErrorFunc);
 	~LzmaEncoder();
 
 	void Encode(std::span<char*>);
