@@ -2,7 +2,9 @@
 
 extern "C" {
 	typedef void (*ErrorFunc)(HRESULT);
-	void __declspec(dllexport) __stdcall StartDiary(HWND, ErrorFunc);
+	bool __declspec(dllexport) __stdcall InitializeDiary(ErrorFunc);
+
+	void __declspec(dllexport) __stdcall StartDiary(HWND);
 
 	typedef void (*ExportDiaryVideoCompletion)(float, void*);
 	void __declspec(dllexport) __stdcall  ExportDiaryVideo(LPWSTR, ExportDiaryVideoCompletion, void*);
@@ -15,16 +17,19 @@ constexpr int MAX_DIARY_FILES = 2;
 constexpr int MAX_FRAME_RATE = 30;
 constexpr int MAX_FRAMES_PER_DIARY_FILE = 10 * MAX_FRAME_RATE;
 
-constexpr int DIARY_VIDEO_BITRATE = 30000000;
+constexpr int DIARY_VIDEO_BITRATE = 5000 * 1024;
 
 struct DesktopDuplication : winrt::implements<DesktopDuplication, ::IInspectable>
 {
-	DesktopDuplication(HWND hWnd, ErrorFunc errorFunc);
+	DesktopDuplication(ErrorFunc);
+	winrt::Windows::Foundation::IAsyncAction Start(HWND);
 	winrt::Windows::Foundation::IAsyncAction ExportVideo(std::wstring, ExportDiaryVideoCompletion, void*);
 	void StopDiaryAndWait();
 
+	static std::filesystem::path GetDiaryFilePath(int index, bool create);
+
 private:
-	HWND hWnd;
+	volatile bool stopping{};
 	ErrorFunc errorFunc;
 	int outputFileIndex = -1;
 	std::ofstream outputFile;
@@ -53,12 +58,11 @@ private:
 	winrt::Windows::Graphics::DirectX::DirectXPixelFormat DxgiPixelFormatToRtPixelFormat(DXGI_FORMAT) const;
 	int GetFormatBytesPerPixel(DXGI_FORMAT) const;
 
-	std::filesystem::path GetDiaryFilePath(int index, bool create) const;
 	void OpenNextOutputFile();
-	void DumpFrameData(const D3D11_MAPPED_SUBRESOURCE&, DXGI_FORMAT, winrt::Windows::Graphics::SizeInt32);
+	void WriteRecordedImageToFile(const D3D11_MAPPED_SUBRESOURCE&, DXGI_FORMAT, winrt::Windows::Graphics::SizeInt32);
 
 	winrt::Windows::Graphics::SizeInt32 GetMaximumSavedFrameSize(const std::vector<std::filesystem::path>& partPaths, int& frameCount) const;
 
 	HRESULT WriteTransformOutputSamplesToSink(winrt::com_ptr<IMFTransform>& frameTransform,
-		winrt::com_ptr<IMFSinkWriter>& sinkWriter, MFT_OUTPUT_DATA_BUFFER& mftOutputData);
+		winrt::com_ptr<IMFSinkWriter>& sinkWriter, MFT_OUTPUT_DATA_BUFFER& mftOutputData) const;
 };

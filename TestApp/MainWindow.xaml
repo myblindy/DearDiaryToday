@@ -6,20 +6,20 @@
         xmlns:local="clr-namespace:TestApp"
         mc:Ignorable="d"
         Loaded="WindowLoaded" Closing="WindowClosing"
-        Title="MainWindow" Height="450" Width="800">
+        Title="MainWindow" Height="600" Width="812">
     <Window.Resources>
         <BooleanToVisibilityConverter x:Key="BooleanToVisibilityConverter"/>
     </Window.Resources>
-    <Grid>
+    <Canvas>
         <Button Content="Button" HorizontalAlignment="Left" Margin="151,102,0,0" VerticalAlignment="Top"/>
-        <Button Content="Button" HorizontalAlignment="Left" Margin="339,281,0,0" VerticalAlignment="Top"/>
-        <CheckBox Content="CheckBox" HorizontalAlignment="Left" Margin="231,236,0,0" VerticalAlignment="Top"/>
-        <CheckBox Content="CheckBox" HorizontalAlignment="Left" Margin="595,67,0,0" VerticalAlignment="Top"/>
-        <Rectangle HorizontalAlignment="Left" Height="136" Margin="400,142,0,0" Stroke="Black" VerticalAlignment="Top" Width="266"/>
-        <TextBlock HorizontalAlignment="Left" Margin="294,157,0,0" TextWrapping="Wrap" Text="TextBlock" VerticalAlignment="Top"/>
+        <Button Content="Button" HorizontalAlignment="Left" Margin="339,281,0,0" VerticalAlignment="Top" Grid.ColumnSpan="2"/>
+        <CheckBox Content="CheckBox" HorizontalAlignment="Left" VerticalAlignment="Top" Canvas.Left="263" Canvas.Top="253"/>
+        <CheckBox Content="CheckBox" HorizontalAlignment="Left" Margin="243,67,0,0" VerticalAlignment="Top" Grid.Column="1"/>
+        <Rectangle HorizontalAlignment="Left" Height="125" Stroke="Black" VerticalAlignment="Top" Width="71" Grid.Column="1" Canvas.Left="641" Canvas.Top="218"/>
+        <TextBlock HorizontalAlignment="Left" TextWrapping="Wrap" Text="TextBlock" VerticalAlignment="Top" Canvas.Left="171" Canvas.Top="316"/>
 
-        <CheckBox x:Name="AnimateCheckBox" Content="Animate" HorizontalAlignment="Left" Margin="98,338,0,0" VerticalAlignment="Top"/>
-        <Button Content="Save" HorizontalAlignment="Left" Margin="400,94,0,0" VerticalAlignment="Top" Click="SaveClicked"/>
+        <CheckBox x:Name="AnimateCheckBox" Content="Animate" HorizontalAlignment="Left" VerticalAlignment="Top" Canvas.Left="30" Canvas.Top="198"/>
+        <Button Content="Save" HorizontalAlignment="Left" VerticalAlignment="Top" Click="SaveClicked" Grid.Column="1" Canvas.Left="592" Canvas.Top="133"/>
         <Rectangle x:Name="Bouncer" HorizontalAlignment="Left" Height="30" Margin="179,210,0,0" VerticalAlignment="Top" Width="30"
                    Visibility="{Binding ElementName=AnimateCheckBox, Path=IsChecked, Converter={StaticResource BooleanToVisibilityConverter}}"
                    RenderTransformOrigin="0.5,0.5" Fill="BlueViolet" StrokeThickness="5" Stroke="DarkBlue">
@@ -27,16 +27,18 @@
                 <RotateTransform x:Name="BouncerRotateTransform"/>
             </Rectangle.RenderTransform>
         </Rectangle>
-        <ProgressBar x:Name="SaveProgress" Margin="324,202,67,212" RenderTransformOrigin="0.5,0.5" Visibility="Collapsed" Maximum="1">
+        <ProgressBar x:Name="SaveProgress" RenderTransformOrigin="0.5,0.5" Maximum="1" Visibility="Collapsed"
+                     Canvas.Left="300" Canvas.Top="200" Width="212" Height="60" Grid.Column="1">
             <ProgressBar.RenderTransform>
                 <TransformGroup>
                     <ScaleTransform/>
                     <SkewTransform/>
-                    <RotateTransform Angle="-57.636"/>
+                    <RotateTransform Angle="-57"/>
                     <TranslateTransform/>
                 </TransformGroup>
             </ProgressBar.RenderTransform>
         </ProgressBar>
+        <TextBlock x:Name="Counter" HorizontalAlignment="Left" Margin="52,129,0,0" TextWrapping="Wrap" Text="Counter" VerticalAlignment="Top" FontSize="36" FontWeight="Bold"/>
 
-    </Grid>
+    </Canvas>
 </Window>

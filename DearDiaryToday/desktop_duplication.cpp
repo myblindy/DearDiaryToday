@@ -13,10 +13,33 @@ using namespace Windows::Graphics::DirectX;
 using namespace Windows::Graphics::DirectX::Direct3D11;
 
 com_ptr<DesktopDuplication> desktopDuplicationInstance;
-void StartDiary(HWND _hWnd, ErrorFunc _errorFunc)
+
+bool __stdcall InitializeDiary(ErrorFunc _errorFunc)
 {
 	MFStartup(MF_VERSION);
-	desktopDuplicationInstance = make_self<DesktopDuplication>(_hWnd, _errorFunc);
+	desktopDuplicationInstance = make_self<DesktopDuplication>(_errorFunc);
+
+	for (int i = 0; i < MAX_DIARY_FILES; ++i)
+	{
+		auto diaryFilePath = DesktopDuplication::GetDiaryFilePath(i, false);
+		if (filesystem::exists(diaryFilePath))
+			return true; // found a diary file
+	}
+	return false; // no diary files found
+}
+
+void StartDiary(HWND hWnd)
+{
+	// delete all left over diary files
+	for (int i = 0; i < MAX_DIARY_FILES; ++i)
+	{
+		auto diaryFilePath = DesktopDuplication::GetDiaryFilePath(i, false);
+
+		error_code ec;
+		filesystem::remove(diaryFilePath, ec);
+	}
+
+	desktopDuplicationInstance->Start(hWnd);
 }
 
 void ExportDiaryVideo(LPWSTR outputPath, ExportDiaryVideoCompletion completion, void* completionArg)
@@ -41,9 +64,8 @@ void __stdcall StopDiary(StopDiaryCompletion completion, void* completionArg)
 #define CHECK_HR_RET(hr) do { if (FAILED(hr)) { errorFunc(hr); return hr; } } while (false)
 #define CHECK_HR_CR(hr) do { if (FAILED(hr)) { errorFunc(hr); co_return; } } while (false)
 
-DesktopDuplication::DesktopDuplication(HWND hWnd, ErrorFunc errorFunc)
+DesktopDuplication::DesktopDuplication(ErrorFunc errorFunc)
 {
-	this->hWnd = hWnd;
 	this->errorFunc = errorFunc;
 	InitializeCriticalSection(&fileAccessCriticalSection);
 
@@ -71,6 +93,12 @@ DesktopDuplication::DesktopDuplication(HWND hWnd, ErrorFunc errorFunc)
 		d3dRtDevice = d3dRawRtDevice.as<IDirect3DDevice>();
 	}
 
+}
+
+IAsyncAction DesktopDuplication::Start(HWND hWnd)
+{
+	auto self = get_strong();
+
 	{
 		auto activationFactory = winrt::get_activation_factory<GraphicsCaptureItem>();
 		auto interopFactory = activationFactory.as<IGraphicsCaptureItemInterop>();
@@ -84,15 +112,12 @@ DesktopDuplication::DesktopDuplication(HWND hWnd, ErrorFunc errorFunc)
 
 	OpenNextOutputFile();
 
-	auto InitAsync = [this] -> fire_and_forget {
-		auto self = get_strong();
-		auto res = co_await GraphicsCaptureAccess::RequestAccessAsync(GraphicsCaptureAccessKind::Borderless);
-		if (res == Windows::Security::Authorization::AppCapabilityAccess::AppCapabilityAccessStatus::Allowed)
-			self->captureSession.IsBorderRequired(false);
-		self->captureSession.StartCapture();
-		};
-	InitAsync();
+	auto res = co_await GraphicsCaptureAccess::RequestAccessAsync(GraphicsCaptureAccessKind::Borderless);
+	if (res == Windows::Security::Authorization::AppCapabilityAccess::AppCapabilityAccessStatus::Allowed)
+		self->captureSession.IsBorderRequired(false);
+	self->captureSession.StartCapture();
 }
+
 
 static int roundUp(int numToRound, int multiple)
 {
@@ -176,13 +201,13 @@ IAsyncAction DesktopDuplication::ExportVideo(wstring outputPath, ExportDiaryVide
 		CHECK_HR_CR(MFCreateMediaType(mediaTypeOut.put()));
 		CHECK_HR_CR(mediaTypeOut->SetGUID(MF_MT_MAJOR_TYPE, MFMediaType_Video));
 		CHECK_HR_CR(mediaTypeOut->SetGUID(MF_MT_SUBTYPE, MFVideoFormat_NV12));
-		CHECK_HR_CR(MFSetAttributeSize(mediaTypeOut.get(), MF_MT_FRAME_SIZE, maxFrameSize.Width, roundUp(maxFrameSize.Height, 2)));
+		CHECK_HR_CR(MFSetAttributeSize(mediaTypeOut.get(), MF_MT_FRAME_SIZE, maxFrameSize.Width, maxFrameSize.Height));
 		CHECK_HR_CR(MFSetAttributeRatio(mediaTypeOut.get(), MF_MT_PIXEL_ASPECT_RATIO, 1, 1));
 
 		CHECK_HR_CR(MFCreateMediaType(mediaTypeIn.put()));
 		CHECK_HR_CR(mediaTypeIn->SetGUID(MF_MT_MAJOR_TYPE, MFMediaType_Video));
 		CHECK_HR_CR(mediaTypeIn->SetGUID(MF_MT_SUBTYPE, MFVideoFormat_RGB32));
-		CHECK_HR_CR(MFSetAttributeSize(mediaTypeIn.get(), MF_MT_FRAME_SIZE, maxFrameSize.Width, roundUp(maxFrameSize.Height, 2)));
+		CHECK_HR_CR(MFSetAttributeSize(mediaTypeIn.get(), MF_MT_FRAME_SIZE, maxFrameSize.Width, maxFrameSize.Height));
 		CHECK_HR_CR(MFSetAttributeRatio(mediaTypeIn.get(), MF_MT_PIXEL_ASPECT_RATIO, 1, 1));
 
 		frameTransform->SetInputType(inputStreams[0], mediaTypeIn.get(), 0);
@@ -192,7 +217,7 @@ IAsyncAction DesktopDuplication::ExportVideo(wstring outputPath, ExportDiaryVide
 	MFT_OUTPUT_STREAM_INFO outputStreamInfo{};
 	CHECK_HR_CR(frameTransform->GetOutputStreamInfo(outputStreams[0], &outputStreamInfo));
 	if (outputStreamInfo.cbSize == 0)
-		outputStreamInfo.cbSize = maxFrameSize.Width * roundUp(maxFrameSize.Height, 2) * 4;
+		outputStreamInfo.cbSize = maxFrameSize.Width * maxFrameSize.Height * 4;
 
 	com_ptr<IMFMediaBuffer> outputBuffer;
 	CHECK_HR_CR(MFCreateMemoryBuffer(outputStreamInfo.cbSize, outputBuffer.put()));
@@ -215,21 +240,28 @@ IAsyncAction DesktopDuplication::ExportVideo(wstring outputPath, ExportDiaryVide
 		CHECK_HR_CR(mediaTypeOut->SetGUID(MF_MT_MAJOR_TYPE, MFMediaType_Video));
 		CHECK_HR_CR(mediaTypeOut->SetGUID(MF_MT_SUBTYPE, MFVideoFormat_H264));
 		CHECK_HR_CR(mediaTypeOut->SetUINT32(MF_MT_AVG_BITRATE, DIARY_VIDEO_BITRATE));
-		CHECK_HR_CR(MFSetAttributeSize(mediaTypeOut.get(), MF_MT_FRAME_SIZE, maxFrameSize.Width, roundUp(maxFrameSize.Height, 2)));
+		CHECK_HR_CR(MFSetAttributeSize(mediaTypeOut.get(), MF_MT_FRAME_SIZE, maxFrameSize.Width, maxFrameSize.Height));
 		CHECK_HR_CR(MFSetAttributeRatio(mediaTypeOut.get(), MF_MT_FRAME_RATE, 30, 1)); // 30 FPS
 		CHECK_HR_CR(MFSetAttributeRatio(mediaTypeOut.get(), MF_MT_PIXEL_ASPECT_RATIO, 1, 1));
 		CHECK_HR_CR(mediaTypeOut->SetUINT32(MF_MT_INTERLACE_MODE, MFVideoInterlace_Progressive));
 		CHECK_HR_CR(mediaTypeOut->SetUINT32(MF_MT_ALL_SAMPLES_INDEPENDENT, TRUE));
+		CHECK_HR_CR(mediaTypeOut->SetUINT32(MF_MT_MPEG2_PROFILE, eAVEncH264VProfile_High));
 
 		CHECK_HR_CR(MFCreateMediaType(mediaTypeIn.put()));
 		CHECK_HR_CR(mediaTypeIn->SetGUID(MF_MT_MAJOR_TYPE, MFMediaType_Video));
 		CHECK_HR_CR(mediaTypeIn->SetGUID(MF_MT_SUBTYPE, MFVideoFormat_NV12));
-		CHECK_HR_CR(MFSetAttributeSize(mediaTypeIn.get(), MF_MT_FRAME_SIZE, maxFrameSize.Width, roundUp(maxFrameSize.Height, 2)));
+		CHECK_HR_CR(MFSetAttributeSize(mediaTypeIn.get(), MF_MT_FRAME_SIZE, maxFrameSize.Width, maxFrameSize.Height));
 		CHECK_HR_CR(MFSetAttributeRatio(mediaTypeIn.get(), MF_MT_FRAME_RATE, 30, 1)); // 30 FPS
 		CHECK_HR_CR(MFSetAttributeRatio(mediaTypeIn.get(), MF_MT_PIXEL_ASPECT_RATIO, 1, 1));
 
+		com_ptr<IMFAttributes> attributes;
+		CHECK_HR_CR(MFCreateAttributes(attributes.put(), 1));
+		CHECK_HR_CR(attributes->SetUINT32(CODECAPI_AVEncCommonRateControlMode, eAVEncCommonRateControlMode_Quality));
+		CHECK_HR_CR(attributes->SetUINT32(CODECAPI_AVEncCommonQuality, 40));
+		CHECK_HR_CR(attributes->SetUINT32(CODECAPI_AVEncMPVGOPSize, 4));
+
 		CHECK_HR_CR(sinkWriter->AddStream(mediaTypeOut.get(), &streamIndex));
-		CHECK_HR_CR(sinkWriter->SetInputMediaType(streamIndex, mediaTypeIn.get(), nullptr));
+		CHECK_HR_CR(sinkWriter->SetInputMediaType(streamIndex, mediaTypeIn.get(), attributes.get()));
 		CHECK_HR_CR(sinkWriter->BeginWriting());
 	}
 
@@ -248,8 +280,14 @@ IAsyncAction DesktopDuplication::ExportVideo(wstring outputPath, ExportDiaryVide
 			if (inputFile.eof())
 				break; // end of file
 			inputFile.read(reinterpret_cast<char*>(&height), sizeof(height));
+			if (inputFile.eof())
+				break; // end of file
 			inputFile.read(reinterpret_cast<char*>(&format), sizeof(format));
+			if (inputFile.eof())
+				break; // end of file
 			inputFile.read(reinterpret_cast<char*>(&frameTimeNs), sizeof(frameTimeNs));
+			if (inputFile.eof())
+				break; // end of file
 
 			// advance the time
 			frameTimePointNs += frameTimeNs;
@@ -262,13 +300,24 @@ IAsyncAction DesktopDuplication::ExportVideo(wstring outputPath, ExportDiaryVide
 				CHECK_HR_CR(sample->SetSampleTime(frameTimePointNs / 100));
 
 				com_ptr<IMFMediaBuffer> mediaBuffer;
-				CHECK_HR_CR(MFCreateAlignedMemoryBuffer(width * roundUp(height, 2) * bpp, sizeof(void*), mediaBuffer.put()));
+				CHECK_HR_CR(MFCreateAlignedMemoryBuffer(maxFrameSize.Width * maxFrameSize.Height * bpp, sizeof(void*), mediaBuffer.put()));
 
 				BYTE* data = nullptr;
 				CHECK_HR_CR(mediaBuffer->Lock(&data, nullptr, nullptr));
-				inputFile.read((char*)data, width * height * bpp);
+
+				auto rowPadding = maxFrameSize.Width - width;
+				auto yOffset = (maxFrameSize.Height - height) * maxFrameSize.Width * bpp;
+				if (!rowPadding)
+					inputFile.read((char*)data + yOffset, width * height * bpp);
+				else
+					for (int y = 0; y < height; ++y)
+					{
+						inputFile.read((char*)data + y * maxFrameSize.Width * bpp + yOffset, width * bpp);
+						memset(data + y * maxFrameSize.Width * bpp + yOffset + width * bpp, 0, rowPadding * bpp);
+					}
+
 				CHECK_HR_CR(mediaBuffer->Unlock());
-				CHECK_HR_CR(mediaBuffer->SetCurrentLength(width * roundUp(height, 2) * bpp));
+				CHECK_HR_CR(mediaBuffer->SetCurrentLength(width * height * bpp));
 
 				CHECK_HR_CR(sample->AddBuffer(mediaBuffer.get()));
 				CHECK_HR_CR(frameTransform->ProcessInput(inputStreams[0], sample.get(), 0));
@@ -296,6 +345,8 @@ IAsyncAction DesktopDuplication::ExportVideo(wstring outputPath, ExportDiaryVide
 
 void DesktopDuplication::StopDiaryAndWait()
 {
+	stopping = true;
+
 	captureSession.Close();
 	outputFile.close();
 
@@ -326,6 +377,8 @@ DirectXPixelFormat DesktopDuplication::DxgiPixelFormatToRtPixelFormat(DXGI_FORMA
 
 void DesktopDuplication::OnFrameArrived(Direct3D11CaptureFramePool const& sender, Windows::Foundation::IInspectable const&)
 {
+	if (stopping) return;
+
 	auto newFrame = sender.TryGetNextFrame();
 	auto newFrameSize = newFrame.ContentSize();
 
@@ -357,7 +410,7 @@ void DesktopDuplication::OnFrameArrived(Direct3D11CaptureFramePool const& sender
 	// try to map for reading
 	D3D11_MAPPED_SUBRESOURCE mappedResource{};
 	CHECK_HR(immediateContext->Map(stagingTexture.get(), 0, D3D11_MAP_READ, 0, &mappedResource));
-	DumpFrameData(mappedResource, desc.Format, newFrameSize);
+	WriteRecordedImageToFile(mappedResource, desc.Format, newFrameSize);
 	immediateContext->Unmap(stagingTexture.get(), 0);
 
 	// resize the frame pool if the size has changed
@@ -368,7 +421,7 @@ void DesktopDuplication::OnFrameArrived(Direct3D11CaptureFramePool const& sender
 	}
 }
 
-std::filesystem::path DesktopDuplication::GetDiaryFilePath(int index, bool create) const
+std::filesystem::path DesktopDuplication::GetDiaryFilePath(int index, bool create)
 {
 	filesystem::path diaryPath = filesystem::current_path() / ".diary";
 
@@ -388,7 +441,7 @@ void DesktopDuplication::OpenNextOutputFile()
 	outputFileFrameCount = 0;
 }
 
-void DesktopDuplication::DumpFrameData(const D3D11_MAPPED_SUBRESOURCE& mappedResource, DXGI_FORMAT format, SizeInt32 newFrameSize)
+void DesktopDuplication::WriteRecordedImageToFile(const D3D11_MAPPED_SUBRESOURCE& mappedResource, DXGI_FORMAT format, SizeInt32 newFrameSize)
 {
 	auto bytesPerPixel = GetFormatBytesPerPixel(format);
 
@@ -404,16 +457,36 @@ void DesktopDuplication::DumpFrameData(const D3D11_MAPPED_SUBRESOURCE& mappedRes
 	// max frame rate
 	if (outputFileFrameCount == 0 || time_span_ns >= 1.0 / MAX_FRAME_RATE * chrono::nanoseconds(1s).count())
 	{
+		// NV12 requires the height to be a multiple of 2, and we might as well do it here
+		auto roundFrameWidth = roundUp(newFrameSize.Width, 2);
+		auto roundFrameHeight = roundUp(newFrameSize.Height, 2);
+
 		EnterCriticalSection(&fileAccessCriticalSection);
-		outputFile.write(reinterpret_cast<const char*>(&newFrameSize.Width), sizeof(newFrameSize.Width));
-		outputFile.write(reinterpret_cast<const char*>(&newFrameSize.Height), sizeof(newFrameSize.Height));
+		outputFile.write(reinterpret_cast<const char*>(&roundFrameWidth), sizeof(roundFrameWidth));
+		outputFile.write(reinterpret_cast<const char*>(&roundFrameHeight), sizeof(roundFrameHeight));
 		outputFile.write(reinterpret_cast<const char*>(&format), sizeof(format));
 
 		outputFile.write(reinterpret_cast<const char*>(&time_span_ns), sizeof(time_span_ns));
 
 		for (int y = 0; y < newFrameSize.Height; ++y)
+		{
 			outputFile.write(reinterpret_cast<const char*>(mappedResource.pData) + (newFrameSize.Height - y - 1) * mappedResource.RowPitch,
 				newFrameSize.Width * bytesPerPixel);
+			if (newFrameSize.Width < roundFrameWidth)
+			{
+				// pad end of row if necessary
+				uint32_t emptyPixel{};
+				outputFile.write(reinterpret_cast<const char*>(&emptyPixel), sizeof(emptyPixel));
+			}
+		}
+		if (newFrameSize.Height < roundFrameHeight)
+		{
+			// pad end of frame if necessary
+			uint32_t emptyPixel{};
+			for (int x = 0; x < roundFrameWidth; ++x)
+				outputFile.write(reinterpret_cast<const char*>(&emptyPixel), sizeof(emptyPixel));
+		}
+
 		LeaveCriticalSection(&fileAccessCriticalSection);
 
 		++outputFileFrameCount;
@@ -458,7 +531,7 @@ Windows::Graphics::SizeInt32 DesktopDuplication::GetMaximumSavedFrameSize(const 
 }
 
 HRESULT DesktopDuplication::WriteTransformOutputSamplesToSink(com_ptr<IMFTransform>& frameTransform,
-	com_ptr<IMFSinkWriter>& sinkWriter, MFT_OUTPUT_DATA_BUFFER& mftOutputData)
+	com_ptr<IMFSinkWriter>& sinkWriter, MFT_OUTPUT_DATA_BUFFER& mftOutputData) const
 {
 nextSample:
 	DWORD outputStatus = 0;

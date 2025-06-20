@@ -27,6 +27,7 @@
 #include <mfidl.h>
 #include <mfreadwrite.h>
 #include <mferror.h>
+#include <codecapi.h>
 
 #pragma comment(lib, "mf")
 #pragma comment(lib, "mfplat")

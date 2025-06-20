@@ -9,6 +9,7 @@ namespace TestApp;
 public partial class MainWindow : Window
 {
     readonly PeriodicTimer animationTimer = new(TimeSpan.FromSeconds(1.0 / 30));
+    readonly PeriodicTimer counterTimer = new(TimeSpan.FromSeconds(1.0));
 
     public MainWindow()
     {
@@ -36,12 +37,25 @@ public partial class MainWindow : Window
                 }
             }
             _ = BounceAsync();
+
+            async Task CountAsync()
+            {
+                var count = 0;
+                while (true)
+                {
+                    Counter.Text = $"{++count}";
+                    await counterTimer.WaitForNextTickAsync();
+                }
+            }
+            _ = CountAsync();
         };
     }
 
-    private void WindowLoaded(object sender, RoutedEventArgs e)
+    private async void WindowLoaded(object sender, RoutedEventArgs e)
     {
-        DearDiaryToday.StartDiary(new WindowInteropHelper(this).Handle);
+        var crashVideoFileName = $".diary\\crash-{DateTime.Now:yyyyMMddHHmmss}.mp4";
+        if (await DearDiaryToday.StartDiary(new WindowInteropHelper(this).Handle, async () => crashVideoFileName))
+            Process.Start(new ProcessStartInfo(crashVideoFileName) { UseShellExecute = true });
     }
 
     private async void SaveClicked(object sender, RoutedEventArgs e)
@@ -50,7 +64,7 @@ public partial class MainWindow : Window
         await DearDiaryToday.ExportDiaryVideo(outputFileName, progress => Dispatcher.BeginInvoke(() =>
         {
             SaveProgress.Value = progress;
-            SaveProgress.Visibility = progress >= 0 ? Visibility.Visible : Visibility.Collapsed;
+            SaveProgress.Visibility = progress is >= 0 and <= 1 ? Visibility.Visible : Visibility.Collapsed;
         }));
         Process.Start(new ProcessStartInfo(outputFileName) { UseShellExecute = true });
     }
