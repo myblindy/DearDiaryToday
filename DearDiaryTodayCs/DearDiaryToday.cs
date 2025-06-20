@@ -1,4 +1,5 @@
 ﻿using System;
+using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Runtime.InteropServices;
 using System.Threading;
@@ -50,7 +51,7 @@ public static partial class DearDiaryToday
     static extern void RawExportDiaryVideo([MarshalAs(UnmanagedType.LPWStr)] string outputFileName,
         ExportDiaryVideoCompletion completion, IntPtr completionArg);
 
-    static readonly Dictionary<int, (TaskCompletionSource<bool> tcs, Action<float>? progress)> exportDiaryVideoTCS = [];
+    static readonly ConcurrentDictionary<int, (TaskCompletionSource<bool> tcs, Action<float>? progress)> exportDiaryVideoTCS = [];
     static int nextExportDiaryVideoCompletionId = 0;
     static readonly ExportDiaryVideoCompletion exportDiaryVideoCompletion = (percentDone, arg) =>
     {
@@ -58,7 +59,7 @@ public static partial class DearDiaryToday
         if (percentDone < 0)
         {
             exportDiaryVideoTCS[arg.ToInt32()].tcs.SetResult(true);
-            exportDiaryVideoTCS.Remove(arg.ToInt32());
+            exportDiaryVideoTCS.TryRemove(arg.ToInt32(), out _);
         }
     };
 
@@ -82,7 +83,7 @@ public static partial class DearDiaryToday
     delegate void StopDiaryCompletion(IntPtr arg);
 
     static int nextStopDiaryCompletionId = 0;
-    static readonly Dictionary<int, TaskCompletionSource<bool>> stopDiaryTCS = [];
+    static readonly ConcurrentDictionary<int, TaskCompletionSource<bool>> stopDiaryTCS = [];
 
     [DllImport("deardiarytoday.dll", EntryPoint = "StopDiary", CallingConvention = CallingConvention.StdCall)]
     static extern void RawStopDiary(StopDiaryCompletion completion, IntPtr completionArg);
@@ -90,7 +91,7 @@ public static partial class DearDiaryToday
     static readonly StopDiaryCompletion stopDiaryCompletion = arg =>
     {
         stopDiaryTCS[arg.ToInt32()].SetResult(true);
-        stopDiaryTCS.Remove(arg.ToInt32());
+        stopDiaryTCS.TryRemove(arg.ToInt32(), out _);
     };
 
     /// <summary>

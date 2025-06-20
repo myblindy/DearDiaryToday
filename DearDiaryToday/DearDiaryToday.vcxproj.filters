@@ -24,6 +24,9 @@
     <ClInclude Include="desktop_duplication.h">
       <Filter>Header Files</Filter>
     </ClInclude>
+    <ClInclude Include="LzmaEncoder.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="dllmain.cpp">
@@ -35,5 +38,11 @@
     <ClCompile Include="desktop_duplication.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
+    <ClCompile Include="LzmaEncoder.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+  </ItemGroup>
+  <ItemGroup>
+    <None Include="vcpkg.json" />
   </ItemGroup>
 </Project>

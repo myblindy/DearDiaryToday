@@ -41,6 +41,10 @@
 #include <codecvt>
 #include <chrono>
 #include <functional>
+#include <span>
+
+#include "lzma.h"
+
 #include "framework.h"
 
 typedef std::chrono::high_resolution_clock hr_clock;
