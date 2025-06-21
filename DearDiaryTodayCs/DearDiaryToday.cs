@@ -11,7 +11,7 @@ public static partial class DearDiaryToday
 {
     [UnmanagedFunctionPointer(CallingConvention.StdCall)]
     delegate void ErrorCallback(HRESULT hr);
-
+    
     [DllImport("deardiarytoday.dll", EntryPoint = "InitializeDiary", CallingConvention = CallingConvention.StdCall)]
     static extern bool RawInitializeDiary(ErrorCallback errorFunc);
 
@@ -23,7 +23,7 @@ public static partial class DearDiaryToday
         if (!hr.Succeeded)
             throw new InvalidOperationException($"DearDiaryToday error with HRESULT: {hr}");
     };
-
+    
     /// <summary>
     /// Starts the diary recording. If any previous diaries are present, they are assumed to be left-overs of a crash
     /// and optionally can be saved to a video file before starting a new recording.

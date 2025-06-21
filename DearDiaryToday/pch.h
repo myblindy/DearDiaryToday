@@ -64,3 +64,5 @@ struct __declspec(uuid("A9B3D012-3DF2-4EE3-B8D1-8695F457D3C1"))
 {
 	virtual HRESULT __stdcall GetInterface(GUID const& id, void** object) = 0;
 };
+
+typedef void (*ErrorFunc)(HRESULT);

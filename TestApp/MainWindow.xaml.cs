@@ -55,7 +55,11 @@ public partial class MainWindow : Window
     {
         var crashVideoFileName = $".diary\\crash-{DateTime.Now:yyyyMMddHHmmss}.mp4";
         if (await DearDiaryToday.StartDiary(new WindowInteropHelper(this).Handle, async () => crashVideoFileName))
+        {
             Process.Start(new ProcessStartInfo(crashVideoFileName) { UseShellExecute = true });
+            MessageBox.Show("Dear Diary Today recovered from a crash, starting the last recoded video.",
+                "Dear Diary Today", MessageBoxButton.OK, MessageBoxImage.Error);
+        }
     }
 
     private async void SaveClicked(object sender, RoutedEventArgs e)

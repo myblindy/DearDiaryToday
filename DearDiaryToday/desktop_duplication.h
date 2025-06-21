@@ -1,7 +1,8 @@
 #pragma once
 
+#include "LzmaEncoder.h"
+
 extern "C" {
-	typedef void (*ErrorFunc)(HRESULT);
 	bool __declspec(dllexport) __stdcall InitializeDiary(ErrorFunc);
 
 	void __declspec(dllexport) __stdcall StartDiary(HWND);
@@ -23,16 +24,16 @@ struct DesktopDuplication : winrt::implements<DesktopDuplication, ::IInspectable
 {
 	DesktopDuplication(ErrorFunc);
 	winrt::Windows::Foundation::IAsyncAction Start(HWND);
-	winrt::Windows::Foundation::IAsyncAction ExportVideo(std::wstring, ExportDiaryVideoCompletion, void*);
+	void ExportVideo(std::wstring, ExportDiaryVideoCompletion, void*);
 	void StopDiaryAndWait();
 
 	static std::filesystem::path GetDiaryFilePath(int index, bool create);
 
 private:
 	volatile bool stopping{};
-	ErrorFunc errorFunc;
+	const ErrorFunc errorFunc;
 	int outputFileIndex = -1;
-	std::ofstream outputFile;
+	std::unique_ptr<LzmaEncoder> lzmaEncoder;
 	int outputFileFrameCount{};
 	hr_time_point frameTimePoint;
 

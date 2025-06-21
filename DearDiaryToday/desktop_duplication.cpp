@@ -1,5 +1,6 @@
 #include "pch.h"
 #include "desktop_duplication.h"
+#include "LzmaDecoder.h"
 
 using namespace ATL;
 using namespace std;
@@ -65,8 +66,8 @@ void __stdcall StopDiary(StopDiaryCompletion completion, void* completionArg)
 #define CHECK_HR_CR(hr) do { if (FAILED(hr)) { errorFunc(hr); co_return; } } while (false)
 
 DesktopDuplication::DesktopDuplication(ErrorFunc errorFunc)
+	: errorFunc(errorFunc)
 {
-	this->errorFunc = errorFunc;
 	InitializeCriticalSection(&fileAccessCriticalSection);
 
 	CHECK_HR(CreateDXGIFactory(IID_PPV_ARGS(dxgiFactory.put())));
@@ -125,11 +126,11 @@ static int roundUp(int numToRound, int multiple)
 	return (numToRound + multiple - 1) & -multiple;
 }
 
-IAsyncAction DesktopDuplication::ExportVideo(wstring outputPath, ExportDiaryVideoCompletion completion, void* completionArg)
+void DesktopDuplication::ExportVideo(wstring outputPath, ExportDiaryVideoCompletion completion, void* completionArg)
 {
 	EnterCriticalSection(&fileAccessCriticalSection);
 	// close the current output file, and rename them to temporary names so we can parse them in peace
-	outputFile.close();
+	lzmaEncoder.reset();
 
 	int partIdx = 0;
 	vector<filesystem::path> diaryFilePaths;
@@ -165,178 +166,180 @@ IAsyncAction DesktopDuplication::ExportVideo(wstring outputPath, ExportDiaryVide
 	int frameCount{};
 	auto maxFrameSize = GetMaximumSavedFrameSize(diaryFilePaths, frameCount);
 
-	// we must convert RGB32 to NV12
-	com_ptr<IMFTransform> frameTransform;
-	{
-		MFT_REGISTER_TYPE_INFO inputType{}, outputType{};
-		inputType.guidMajorType = MFMediaType_Video;
-		inputType.guidSubtype = MFVideoFormat_RGB32;
-		outputType.guidMajorType = MFMediaType_Video;
-		outputType.guidSubtype = MFVideoFormat_NV12;
-		IMFActivate** mftActivators{};
-		UINT32 mftActivatorsCount{};
-		CHECK_HR_CR(MFTEnumEx(MFT_CATEGORY_VIDEO_PROCESSOR,
-			MFT_ENUM_FLAG_TRANSCODE_ONLY | MFT_ENUM_FLAG_SORTANDFILTER,
-			&inputType, &outputType, &mftActivators, &mftActivatorsCount));
-		CHECK_HR_CR(mftActivators[0]->ActivateObject(IID_PPV_ARGS(frameTransform.put())));
-		CoTaskMemFree(mftActivators);
-	}
-	vector<DWORD> inputStreams, outputStreams;
-	{
-		DWORD inputStreamCount{}, outputStreamCount{};
-		CHECK_HR_CR(frameTransform->GetStreamCount(&inputStreamCount, &outputStreamCount));
-		inputStreams.resize(inputStreamCount);
-		outputStreams.resize(outputStreamCount);
-		auto hr = frameTransform->GetStreamIDs(inputStreamCount, inputStreams.data(), outputStreamCount, outputStreams.data());
-		if (hr == E_NOTIMPL)
-		{
-			// some MFTs don't support GetStreamIDs, so we just assume the first stream is the input and output
-			inputStreams[0] = 0;
-			outputStreams[0] = 0;
-		}
-		else
-			CHECK_HR_CR(hr);
-
-		com_ptr<IMFMediaType> mediaTypeOut, mediaTypeIn;
-		CHECK_HR_CR(MFCreateMediaType(mediaTypeOut.put()));
-		CHECK_HR_CR(mediaTypeOut->SetGUID(MF_MT_MAJOR_TYPE, MFMediaType_Video));
-		CHECK_HR_CR(mediaTypeOut->SetGUID(MF_MT_SUBTYPE, MFVideoFormat_NV12));
-		CHECK_HR_CR(MFSetAttributeSize(mediaTypeOut.get(), MF_MT_FRAME_SIZE, maxFrameSize.Width, maxFrameSize.Height));
-		CHECK_HR_CR(MFSetAttributeRatio(mediaTypeOut.get(), MF_MT_PIXEL_ASPECT_RATIO, 1, 1));
-
-		CHECK_HR_CR(MFCreateMediaType(mediaTypeIn.put()));
-		CHECK_HR_CR(mediaTypeIn->SetGUID(MF_MT_MAJOR_TYPE, MFMediaType_Video));
-		CHECK_HR_CR(mediaTypeIn->SetGUID(MF_MT_SUBTYPE, MFVideoFormat_RGB32));
-		CHECK_HR_CR(MFSetAttributeSize(mediaTypeIn.get(), MF_MT_FRAME_SIZE, maxFrameSize.Width, maxFrameSize.Height));
-		CHECK_HR_CR(MFSetAttributeRatio(mediaTypeIn.get(), MF_MT_PIXEL_ASPECT_RATIO, 1, 1));
-
-		frameTransform->SetInputType(inputStreams[0], mediaTypeIn.get(), 0);
-		frameTransform->SetOutputType(outputStreams[0], mediaTypeOut.get(), 0);
-	}
-
-	MFT_OUTPUT_STREAM_INFO outputStreamInfo{};
-	CHECK_HR_CR(frameTransform->GetOutputStreamInfo(outputStreams[0], &outputStreamInfo));
-	if (outputStreamInfo.cbSize == 0)
-		outputStreamInfo.cbSize = maxFrameSize.Width * maxFrameSize.Height * 4;
-
-	com_ptr<IMFMediaBuffer> outputBuffer;
-	CHECK_HR_CR(MFCreateMemoryBuffer(outputStreamInfo.cbSize, outputBuffer.put()));
-
-	com_ptr<IMFSample> outputSample;
-	CHECK_HR_CR(MFCreateSample(outputSample.put()));
-	CHECK_HR_CR(outputSample->AddBuffer(outputBuffer.get()));
-
-	MFT_OUTPUT_DATA_BUFFER mftOutputData{};
-	mftOutputData.dwStreamID = outputStreams[0];
-	mftOutputData.pSample = outputSample.get();
-
 	com_ptr<IMFSinkWriter> sinkWriter;
 	DWORD streamIndex{};
-	CHECK_HR_CR(MFCreateSinkWriterFromURL(outputPath.data(), nullptr, nullptr, sinkWriter.put()));
+	CHECK_HR(MFCreateSinkWriterFromURL(outputPath.data(), nullptr, nullptr, sinkWriter.put()));
 
+	if (maxFrameSize.Width > 0 && maxFrameSize.Height > 0)
 	{
-		com_ptr<IMFMediaType> mediaTypeOut, mediaTypeIn;
-		CHECK_HR_CR(MFCreateMediaType(mediaTypeOut.put()));
-		CHECK_HR_CR(mediaTypeOut->SetGUID(MF_MT_MAJOR_TYPE, MFMediaType_Video));
-		CHECK_HR_CR(mediaTypeOut->SetGUID(MF_MT_SUBTYPE, MFVideoFormat_H264));
-		CHECK_HR_CR(mediaTypeOut->SetUINT32(MF_MT_AVG_BITRATE, DIARY_VIDEO_BITRATE));
-		CHECK_HR_CR(MFSetAttributeSize(mediaTypeOut.get(), MF_MT_FRAME_SIZE, maxFrameSize.Width, maxFrameSize.Height));
-		CHECK_HR_CR(MFSetAttributeRatio(mediaTypeOut.get(), MF_MT_FRAME_RATE, 30, 1)); // 30 FPS
-		CHECK_HR_CR(MFSetAttributeRatio(mediaTypeOut.get(), MF_MT_PIXEL_ASPECT_RATIO, 1, 1));
-		CHECK_HR_CR(mediaTypeOut->SetUINT32(MF_MT_INTERLACE_MODE, MFVideoInterlace_Progressive));
-		CHECK_HR_CR(mediaTypeOut->SetUINT32(MF_MT_ALL_SAMPLES_INDEPENDENT, TRUE));
-		CHECK_HR_CR(mediaTypeOut->SetUINT32(MF_MT_MPEG2_PROFILE, eAVEncH264VProfile_High));
-
-		CHECK_HR_CR(MFCreateMediaType(mediaTypeIn.put()));
-		CHECK_HR_CR(mediaTypeIn->SetGUID(MF_MT_MAJOR_TYPE, MFMediaType_Video));
-		CHECK_HR_CR(mediaTypeIn->SetGUID(MF_MT_SUBTYPE, MFVideoFormat_NV12));
-		CHECK_HR_CR(MFSetAttributeSize(mediaTypeIn.get(), MF_MT_FRAME_SIZE, maxFrameSize.Width, maxFrameSize.Height));
-		CHECK_HR_CR(MFSetAttributeRatio(mediaTypeIn.get(), MF_MT_FRAME_RATE, 30, 1)); // 30 FPS
-		CHECK_HR_CR(MFSetAttributeRatio(mediaTypeIn.get(), MF_MT_PIXEL_ASPECT_RATIO, 1, 1));
-
-		com_ptr<IMFAttributes> attributes;
-		CHECK_HR_CR(MFCreateAttributes(attributes.put(), 1));
-		CHECK_HR_CR(attributes->SetUINT32(CODECAPI_AVEncCommonRateControlMode, eAVEncCommonRateControlMode_Quality));
-		CHECK_HR_CR(attributes->SetUINT32(CODECAPI_AVEncCommonQuality, 40));
-		CHECK_HR_CR(attributes->SetUINT32(CODECAPI_AVEncMPVGOPSize, 4));
-
-		CHECK_HR_CR(sinkWriter->AddStream(mediaTypeOut.get(), &streamIndex));
-		CHECK_HR_CR(sinkWriter->SetInputMediaType(streamIndex, mediaTypeIn.get(), attributes.get()));
-		CHECK_HR_CR(sinkWriter->BeginWriting());
-	}
-
-	int64_t frameTimePointNs{};
-	int frameIndex{};
-	for (auto& diaryFilePath : diaryFilePaths)
-	{
-		ifstream inputFile(diaryFilePath, ios::binary | ios::in);
-
-		while (true)
+		// we must convert RGB32 to NV12
+		com_ptr<IMFTransform> frameTransform;
 		{
-			int width{}, height{};
-			DXGI_FORMAT format{};
-			hr_time_point::rep frameTimeNs{};
-			inputFile.read(reinterpret_cast<char*>(&width), sizeof(width));
-			if (inputFile.eof())
-				break; // end of file
-			inputFile.read(reinterpret_cast<char*>(&height), sizeof(height));
-			if (inputFile.eof())
-				break; // end of file
-			inputFile.read(reinterpret_cast<char*>(&format), sizeof(format));
-			if (inputFile.eof())
-				break; // end of file
-			inputFile.read(reinterpret_cast<char*>(&frameTimeNs), sizeof(frameTimeNs));
-			if (inputFile.eof())
-				break; // end of file
-
-			// advance the time
-			frameTimePointNs += frameTimeNs;
-			auto bpp = GetFormatBytesPerPixel(format);
-
+			MFT_REGISTER_TYPE_INFO inputType{}, outputType{};
+			inputType.guidMajorType = MFMediaType_Video;
+			inputType.guidSubtype = MFVideoFormat_RGB32;
+			outputType.guidMajorType = MFMediaType_Video;
+			outputType.guidSubtype = MFVideoFormat_NV12;
+			IMFActivate** mftActivators{};
+			UINT32 mftActivatorsCount{};
+			CHECK_HR(MFTEnumEx(MFT_CATEGORY_VIDEO_PROCESSOR,
+				MFT_ENUM_FLAG_TRANSCODE_ONLY | MFT_ENUM_FLAG_SORTANDFILTER,
+				&inputType, &outputType, &mftActivators, &mftActivatorsCount));
+			CHECK_HR(mftActivators[0]->ActivateObject(IID_PPV_ARGS(frameTransform.put())));
+			CoTaskMemFree(mftActivators);
+		}
+		vector<DWORD> inputStreams, outputStreams;
+		{
+			DWORD inputStreamCount{}, outputStreamCount{};
+			CHECK_HR(frameTransform->GetStreamCount(&inputStreamCount, &outputStreamCount));
+			inputStreams.resize(inputStreamCount);
+			outputStreams.resize(outputStreamCount);
+			auto hr = frameTransform->GetStreamIDs(inputStreamCount, inputStreams.data(), outputStreamCount, outputStreams.data());
+			if (hr == E_NOTIMPL)
 			{
-				// MFT transform
-				com_ptr<IMFSample> sample;
-				CHECK_HR_CR(MFCreateSample(sample.put()));
-				CHECK_HR_CR(sample->SetSampleTime(frameTimePointNs / 100));
-
-				com_ptr<IMFMediaBuffer> mediaBuffer;
-				CHECK_HR_CR(MFCreateAlignedMemoryBuffer(maxFrameSize.Width * maxFrameSize.Height * bpp, sizeof(void*), mediaBuffer.put()));
-
-				BYTE* data = nullptr;
-				CHECK_HR_CR(mediaBuffer->Lock(&data, nullptr, nullptr));
-
-				auto rowPadding = maxFrameSize.Width - width;
-				auto yOffset = (maxFrameSize.Height - height) * maxFrameSize.Width * bpp;
-				if (!rowPadding)
-					inputFile.read((char*)data + yOffset, width * height * bpp);
-				else
-					for (int y = 0; y < height; ++y)
-					{
-						inputFile.read((char*)data + y * maxFrameSize.Width * bpp + yOffset, width * bpp);
-						memset(data + y * maxFrameSize.Width * bpp + yOffset + width * bpp, 0, rowPadding * bpp);
-					}
-
-				CHECK_HR_CR(mediaBuffer->Unlock());
-				CHECK_HR_CR(mediaBuffer->SetCurrentLength(width * height * bpp));
-
-				CHECK_HR_CR(sample->AddBuffer(mediaBuffer.get()));
-				CHECK_HR_CR(frameTransform->ProcessInput(inputStreams[0], sample.get(), 0));
-
-				completion(++frameIndex / (float)frameCount, completionArg);
+				// some MFTs don't support GetStreamIDs, so we just assume the first stream is the input and output
+				inputStreams[0] = 0;
+				outputStreams[0] = 0;
 			}
+			else
+				CHECK_HR(hr);
 
-			// samples
-			CHECK_HR_CR(WriteTransformOutputSamplesToSink(frameTransform, sinkWriter, mftOutputData));
+			com_ptr<IMFMediaType> mediaTypeOut, mediaTypeIn;
+			CHECK_HR(MFCreateMediaType(mediaTypeOut.put()));
+			CHECK_HR(mediaTypeOut->SetGUID(MF_MT_MAJOR_TYPE, MFMediaType_Video));
+			CHECK_HR(mediaTypeOut->SetGUID(MF_MT_SUBTYPE, MFVideoFormat_NV12));
+			CHECK_HR(MFSetAttributeSize(mediaTypeOut.get(), MF_MT_FRAME_SIZE, maxFrameSize.Width, maxFrameSize.Height));
+			CHECK_HR(MFSetAttributeRatio(mediaTypeOut.get(), MF_MT_PIXEL_ASPECT_RATIO, 1, 1));
+
+			CHECK_HR(MFCreateMediaType(mediaTypeIn.put()));
+			CHECK_HR(mediaTypeIn->SetGUID(MF_MT_MAJOR_TYPE, MFMediaType_Video));
+			CHECK_HR(mediaTypeIn->SetGUID(MF_MT_SUBTYPE, MFVideoFormat_RGB32));
+			CHECK_HR(MFSetAttributeSize(mediaTypeIn.get(), MF_MT_FRAME_SIZE, maxFrameSize.Width, maxFrameSize.Height));
+			CHECK_HR(MFSetAttributeRatio(mediaTypeIn.get(), MF_MT_PIXEL_ASPECT_RATIO, 1, 1));
+
+			frameTransform->SetInputType(inputStreams[0], mediaTypeIn.get(), 0);
+			frameTransform->SetOutputType(outputStreams[0], mediaTypeOut.get(), 0);
 		}
 
-		// delete the part file
-		inputFile.close();
-		filesystem::remove(diaryFilePath, ec);
-	}
+		MFT_OUTPUT_STREAM_INFO outputStreamInfo{};
+		CHECK_HR(frameTransform->GetOutputStreamInfo(outputStreams[0], &outputStreamInfo));
+		if (outputStreamInfo.cbSize == 0)
+			outputStreamInfo.cbSize = maxFrameSize.Width * maxFrameSize.Height * 4;
 
-	// drain the MFT
-	frameTransform->ProcessMessage(MFT_MESSAGE_COMMAND_DRAIN, 0);
-	CHECK_HR_CR(WriteTransformOutputSamplesToSink(frameTransform, sinkWriter, mftOutputData));
+		com_ptr<IMFMediaBuffer> outputBuffer;
+		CHECK_HR(MFCreateMemoryBuffer(outputStreamInfo.cbSize, outputBuffer.put()));
+
+		com_ptr<IMFSample> outputSample;
+		CHECK_HR(MFCreateSample(outputSample.put()));
+		CHECK_HR(outputSample->AddBuffer(outputBuffer.get()));
+
+		MFT_OUTPUT_DATA_BUFFER mftOutputData{};
+		mftOutputData.dwStreamID = outputStreams[0];
+		mftOutputData.pSample = outputSample.get();
+
+		{
+			com_ptr<IMFMediaType> mediaTypeOut, mediaTypeIn;
+			CHECK_HR(MFCreateMediaType(mediaTypeOut.put()));
+			CHECK_HR(mediaTypeOut->SetGUID(MF_MT_MAJOR_TYPE, MFMediaType_Video));
+			CHECK_HR(mediaTypeOut->SetGUID(MF_MT_SUBTYPE, MFVideoFormat_H264));
+			CHECK_HR(mediaTypeOut->SetUINT32(MF_MT_AVG_BITRATE, DIARY_VIDEO_BITRATE));
+			CHECK_HR(MFSetAttributeSize(mediaTypeOut.get(), MF_MT_FRAME_SIZE, maxFrameSize.Width, maxFrameSize.Height));
+			CHECK_HR(MFSetAttributeRatio(mediaTypeOut.get(), MF_MT_FRAME_RATE, 30, 1)); // 30 FPS
+			CHECK_HR(MFSetAttributeRatio(mediaTypeOut.get(), MF_MT_PIXEL_ASPECT_RATIO, 1, 1));
+			CHECK_HR(mediaTypeOut->SetUINT32(MF_MT_INTERLACE_MODE, MFVideoInterlace_Progressive));
+			CHECK_HR(mediaTypeOut->SetUINT32(MF_MT_ALL_SAMPLES_INDEPENDENT, TRUE));
+			CHECK_HR(mediaTypeOut->SetUINT32(MF_MT_MPEG2_PROFILE, eAVEncH264VProfile_High));
+
+			CHECK_HR(MFCreateMediaType(mediaTypeIn.put()));
+			CHECK_HR(mediaTypeIn->SetGUID(MF_MT_MAJOR_TYPE, MFMediaType_Video));
+			CHECK_HR(mediaTypeIn->SetGUID(MF_MT_SUBTYPE, MFVideoFormat_NV12));
+			CHECK_HR(MFSetAttributeSize(mediaTypeIn.get(), MF_MT_FRAME_SIZE, maxFrameSize.Width, maxFrameSize.Height));
+			CHECK_HR(MFSetAttributeRatio(mediaTypeIn.get(), MF_MT_FRAME_RATE, 30, 1)); // 30 FPS
+			CHECK_HR(MFSetAttributeRatio(mediaTypeIn.get(), MF_MT_PIXEL_ASPECT_RATIO, 1, 1));
+
+			com_ptr<IMFAttributes> attributes;
+			CHECK_HR(MFCreateAttributes(attributes.put(), 1));
+			CHECK_HR(attributes->SetUINT32(CODECAPI_AVEncCommonRateControlMode, eAVEncCommonRateControlMode_Quality));
+			CHECK_HR(attributes->SetUINT32(CODECAPI_AVEncCommonQuality, 40));
+			CHECK_HR(attributes->SetUINT32(CODECAPI_AVEncMPVGOPSize, 4));
+
+			CHECK_HR(sinkWriter->AddStream(mediaTypeOut.get(), &streamIndex));
+			CHECK_HR(sinkWriter->SetInputMediaType(streamIndex, mediaTypeIn.get(), attributes.get()));
+			CHECK_HR(sinkWriter->BeginWriting());
+		}
+
+		int64_t frameTimePointNs{};
+		int frameIndex{};
+		for (auto& diaryFilePath : diaryFilePaths)
+		{
+			{
+				LzmaDecoder decoder(make_unique<ifstream>(diaryFilePath, ios::binary | ios::in), errorFunc);
+
+				while (true)
+				{
+					int width{}, height{};
+					DXGI_FORMAT format{};
+					hr_time_point::rep frameTimeNs{};
+					decoder.Decode(width);
+					if (decoder.IsEof())
+						break; // end of file
+					decoder.Decode(height);
+					if (decoder.IsEof())
+						break; // end of file
+					decoder.Decode(format);
+					if (decoder.IsEof())
+						break; // end of file
+					decoder.Decode(frameTimeNs);
+					if (decoder.IsEof())
+						break; // end of file
+
+					// advance the time
+					frameTimePointNs += frameTimeNs;
+					auto bpp = GetFormatBytesPerPixel(format);
+
+					{
+						// MFT transform
+						com_ptr<IMFSample> sample;
+						CHECK_HR(MFCreateSample(sample.put()));
+						CHECK_HR(sample->SetSampleTime(frameTimePointNs / 100));
+
+						com_ptr<IMFMediaBuffer> mediaBuffer;
+						CHECK_HR(MFCreateAlignedMemoryBuffer(maxFrameSize.Width * maxFrameSize.Height * bpp, sizeof(void*), mediaBuffer.put()));
+
+						BYTE* data = nullptr;
+						CHECK_HR(mediaBuffer->Lock(&data, nullptr, nullptr));
+
+						auto rowPadding = maxFrameSize.Width - width;
+						auto yOffset = (maxFrameSize.Height - height) * maxFrameSize.Width * bpp;
+						if (!rowPadding)
+							decoder.Decode({ data + yOffset, static_cast<size_t>(width * height * bpp) });
+						else
+							for (int y = 0; y < height; ++y)
+							{
+								decoder.Decode({ data + y * maxFrameSize.Width * bpp + yOffset, static_cast<size_t>(width * bpp) });
+								memset(data + y * maxFrameSize.Width * bpp + yOffset + width * bpp, 0, rowPadding * bpp);
+							}
+
+						CHECK_HR(mediaBuffer->Unlock());
+						CHECK_HR(mediaBuffer->SetCurrentLength(width * height * bpp));
+
+						CHECK_HR(sample->AddBuffer(mediaBuffer.get()));
+						CHECK_HR(frameTransform->ProcessInput(inputStreams[0], sample.get(), 0));
+
+						completion(++frameIndex / (float)frameCount, completionArg);
+					}
+
+					// samples
+					CHECK_HR(WriteTransformOutputSamplesToSink(frameTransform, sinkWriter, mftOutputData));
+				}
+			}
+			filesystem::remove(diaryFilePath, ec);
+		}
+
+		// drain the MFT
+		frameTransform->ProcessMessage(MFT_MESSAGE_COMMAND_DRAIN, 0);
+		CHECK_HR(WriteTransformOutputSamplesToSink(frameTransform, sinkWriter, mftOutputData));
+	}
 
 	sinkWriter->Finalize();
 
@@ -348,7 +351,7 @@ void DesktopDuplication::StopDiaryAndWait()
 	stopping = true;
 
 	captureSession.Close();
-	outputFile.close();
+	lzmaEncoder.reset();
 
 	for (int diaryIdx = 0;; ++diaryIdx)
 	{
@@ -435,8 +438,9 @@ void DesktopDuplication::OpenNextOutputFile()
 {
 	outputFileIndex = (outputFileIndex + 1) % MAX_DIARY_FILES;
 
-	outputFile.close();
-	outputFile.open(GetDiaryFilePath(outputFileIndex, true), ios::binary | ios::out | ios::trunc);
+	lzmaEncoder = make_unique<LzmaEncoder>(
+		make_unique<ofstream>(GetDiaryFilePath(outputFileIndex, true), ios::binary | ios::out | ios::trunc),
+		errorFunc);
 
 	outputFileFrameCount = 0;
 }
@@ -462,29 +466,28 @@ void DesktopDuplication::WriteRecordedImageToFile(const D3D11_MAPPED_SUBRESOURCE
 		auto roundFrameHeight = roundUp(newFrameSize.Height, 2);
 
 		EnterCriticalSection(&fileAccessCriticalSection);
-		outputFile.write(reinterpret_cast<const char*>(&roundFrameWidth), sizeof(roundFrameWidth));
-		outputFile.write(reinterpret_cast<const char*>(&roundFrameHeight), sizeof(roundFrameHeight));
-		outputFile.write(reinterpret_cast<const char*>(&format), sizeof(format));
-
-		outputFile.write(reinterpret_cast<const char*>(&time_span_ns), sizeof(time_span_ns));
+		lzmaEncoder->Encode(roundFrameWidth);
+		lzmaEncoder->Encode(roundFrameHeight);
+		lzmaEncoder->Encode(format);
+		lzmaEncoder->Encode(time_span_ns);
 
 		for (int y = 0; y < newFrameSize.Height; ++y)
 		{
-			outputFile.write(reinterpret_cast<const char*>(mappedResource.pData) + (newFrameSize.Height - y - 1) * mappedResource.RowPitch,
-				newFrameSize.Width * bytesPerPixel);
+			lzmaEncoder->Encode({ reinterpret_cast<const BYTE*>(mappedResource.pData) + (newFrameSize.Height - y - 1) * mappedResource.RowPitch,
+				static_cast<size_t>(newFrameSize.Width * bytesPerPixel) });
 			if (newFrameSize.Width < roundFrameWidth)
 			{
 				// pad end of row if necessary
-				uint32_t emptyPixel{};
-				outputFile.write(reinterpret_cast<const char*>(&emptyPixel), sizeof(emptyPixel));
+				lzmaEncoder->Encode(uint32_t{});
 			}
 		}
 		if (newFrameSize.Height < roundFrameHeight)
 		{
 			// pad end of frame if necessary
-			uint32_t emptyPixel{};
-			for (int x = 0; x < roundFrameWidth; ++x)
-				outputFile.write(reinterpret_cast<const char*>(&emptyPixel), sizeof(emptyPixel));
+			char* row = (char*)_malloca(roundFrameWidth * bytesPerPixel);
+			memset(row, 0, roundFrameWidth * bytesPerPixel);
+			lzmaEncoder->Encode(span{ row, static_cast<size_t>(roundFrameWidth * bytesPerPixel) });
+			_freea(row);
 		}
 
 		LeaveCriticalSection(&fileAccessCriticalSection);
@@ -505,20 +508,24 @@ Windows::Graphics::SizeInt32 DesktopDuplication::GetMaximumSavedFrameSize(const 
 
 	for (const auto& partPath : partPaths)
 	{
-		ifstream inputFile(partPath, ios::binary | ios::in);
+		LzmaDecoder decoder(make_unique<ifstream>(partPath, ios::binary | ios::in), errorFunc);
 
 		while (true)
 		{
 			SizeInt32 size{};
-			inputFile.read(reinterpret_cast<char*>(&size.Width), sizeof(size.Width));
-			if (inputFile.eof())
+			decoder.Decode(size.Width);
+			if (decoder.IsEof())
 				break;
-			inputFile.read(reinterpret_cast<char*>(&size.Height), sizeof(size.Height));
+			decoder.Decode(size.Height);
+			if (decoder.IsEof())
+				break;
 			DXGI_FORMAT format{};
-			inputFile.read(reinterpret_cast<char*>(&format), sizeof(format));
-			inputFile.seekg(sizeof(chrono::nanoseconds::rep), ios::cur); // skip timestamp
-			inputFile.seekg(size.Width * size.Height * GetFormatBytesPerPixel(format), ios::cur); // skip pixel data
-			if (inputFile.eof())
+			decoder.Decode(format);
+			if (decoder.IsEof())
+				break;
+			decoder.Skip(sizeof(chrono::nanoseconds::rep)); // skip timestamp
+			decoder.Skip(size.Width * size.Height * GetFormatBytesPerPixel(format)); // skip pixel data
+			if (decoder.IsEof())
 				break;
 
 			maxSize.Width = max(maxSize.Width, size.Width);
