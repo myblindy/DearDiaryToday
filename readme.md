@@ -1,6 +1,15 @@
 # DearDiaryToday
 
+[![NuGet version (MB.DearDiaryToday.x64)](https://img.shields.io/nuget/v/MB.DearDiaryToday.x64.svg?style=flat-square)](https://www.nuget.org/packages/MB.DearDiaryToday.x64/)
+
 This library helps debug issues as they're happening by keeping a video log of the last certain amount of time. It can save the recorded data to a video file on demand, or after a crash. It can work with any kind of window as long as you can get its HWND, be it WinForms, WPF, WinUI3, Win32 etc.
+
+The API used internally is [Windows.Graphics.Capture](https://learn.microsoft.com/en-us/uwp/api/windows.graphics.capture?view=winrt-26100) to record, and [Media Foundation](https://learn.microsoft.com/en-us/windows/win32/medfound/microsoft-media-foundation-sdk) to export the video. As such, the minimum requirements are as follows:
+
+|OS Requirement | Feature|
+|-|-|
+| Win10 | Base functionality|
+| Win11 | Ability to hide the yellow capture border around the window |
 
 The API is designed to be very simple. To start the process, simply call `StartDiary`:
 
