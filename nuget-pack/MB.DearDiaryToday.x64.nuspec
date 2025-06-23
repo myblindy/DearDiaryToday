@@ -1,0 +1,43 @@
+<package xmlns="http://schemas.microsoft.com/packaging/2010/07/nuspec.xsd">
+    <metadata>
+        <!-- Required elements-->
+        <id>MB.DearDiaryToday.x64</id>
+        <version>1.0</version>
+        <description>A library that records a window during run-time and allows arbitrary saves to video files for later playback. Supports using partial diary files after crashes to get a visual log of the last actions done.</description>
+        <authors>myblindy</authors>
+        <owners>myblindy</owners>
+
+        <projectUrl>https://github.com/myblindy/deardiarytoday</projectUrl>
+        <license type="expression">MIT</license>
+
+        <readme>docs\readme.md</readme>
+        <tags>video recording playback crash recovery debugging</tags>
+
+        <dependencies>
+            <group targetFramework="netstandard2.0">
+                <dependency id="System.Memory" version="4.6.3" />
+            </group>
+        </dependencies>
+
+        <references>
+            <group targetFramework="netstandard2.0">
+                <reference file="DearDiaryTodayCs.dll"/>
+                <reference file="DearDiaryTodayCs.pdb"/>
+                <reference file="DearDiaryTodayCs.deps.json"/>
+            </group>
+        </references>
+    </metadata>
+
+    <files>
+        <file src="../readme.md" target="docs" />
+
+        <file src="../DearDiaryTodayCs/bin/Release/netstandard2.0/DearDiaryTodayCs.dll" target="ref/netstandard2.0"/>
+        <file src="../DearDiaryTodayCs/bin/Release/netstandard2.0/DearDiaryTodayCs.dll" target="lib/netstandard2.0"/>
+        <file src="../DearDiaryTodayCs/bin/Release/netstandard2.0/DearDiaryTodayCs.pdb" target="ref/netstandard2.0"/>
+        <file src="../DearDiaryTodayCs/bin/Release/netstandard2.0/DearDiaryTodayCs.pdb" target="lib/netstandard2.0"/>
+        <file src="../DearDiaryTodayCs/bin/Release/netstandard2.0/DearDiaryTodayCs.deps.json" target="ref/netstandard2.0"/>
+        <file src="../DearDiaryTodayCs/bin/Release/netstandard2.0/DearDiaryTodayCs.deps.json" target="lib/netstandard2.0"/>
+
+        <file src="../DearDiaryTodayCs/bin/Release/netstandard2.0/DearDiaryToday.dll" target="runtimes/win-x64/native"/>
+    </files>
+</package>
