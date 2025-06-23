@@ -22,8 +22,6 @@ LzmaDecoder::~LzmaDecoder()
 
 size_t LzmaDecoder::Decode(std::span<BYTE> outSpan)
 {
-	size_t totalBytesWritten{};
-
 	stream.next_out = outSpan.data();
 	stream.avail_out = outSpan.size();
 
@@ -32,7 +30,7 @@ size_t LzmaDecoder::Decode(std::span<BYTE> outSpan)
 		if (stream.avail_in == 0)
 		{
 			stream.next_in = inBuffer.data();
-			istream->read(reinterpret_cast<char*>(inBuffer.data()), BUFSIZ);
+			istream->read(reinterpret_cast<char*>(inBuffer.data()), inBuffer.size());
 			stream.avail_in = istream->gcount();
 		}
 
@@ -44,7 +42,7 @@ size_t LzmaDecoder::Decode(std::span<BYTE> outSpan)
 			break;// errorFunc(E_FAIL);		// if error, write what we can and stop
 	}
 
-	return totalBytesWritten;
+	return outSpan.size() - stream.avail_out;
 }
 
 bool LzmaDecoder::Skip(size_t size)

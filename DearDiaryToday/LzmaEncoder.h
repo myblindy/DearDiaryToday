@@ -14,6 +14,9 @@ public:
 	~LzmaEncoder();
 
 	void Encode(std::span<const BYTE>);
+	void Encode(std::span<BYTE> data) { Encode({ reinterpret_cast<const BYTE*>(data.data()), data.size() }); }
+	void Encode(std::span<const char> data) { Encode({ reinterpret_cast<const BYTE*>(data.data()), data.size() }); }
+	void Encode(std::span<char> data) { Encode({ reinterpret_cast<const BYTE*>(data.data()), data.size() }); }
 
 	template<typename T>
 	void Encode(const T& data)

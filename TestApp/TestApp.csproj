@@ -10,12 +10,16 @@
     <ApplicationManifest>app.manifest</ApplicationManifest>
   </PropertyGroup>
 
-  <ItemGroup>
+  <!--<ItemGroup>
     <PackageReference Include="MB.DearDiaryToday.x64" Version="1.0.0" />
+  </ItemGroup>-->
+
+  <ItemGroup>
+    <ProjectReference Include="..\DearDiaryTodayCs\DearDiaryTodayCs.csproj" />
   </ItemGroup>
 
-  <!--<Target Name="PreBuild" BeforeTargets="PreBuildEvent">
+  <Target Name="PreBuild" BeforeTargets="PreBuildEvent">
     <Exec Command="xcopy /y &quot;..\DearDiaryTodayCs\bin\$(Configuration)\netstandard2.0\&quot; &quot;$(OutputPath)&quot;" />
-  </Target>-->
+  </Target>
 
 </Project>
