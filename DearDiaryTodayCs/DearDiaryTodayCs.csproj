@@ -5,6 +5,8 @@
     <Nullable>enable</Nullable>
     <LangVersion>preview</LangVersion>
     <ProduceReferenceAssembly>true</ProduceReferenceAssembly>
+
+    <Version>1.0.1</Version>
   </PropertyGroup>
 
   <ItemGroup>
