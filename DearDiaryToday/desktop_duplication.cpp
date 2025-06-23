@@ -448,6 +448,7 @@ void DesktopDuplication::OpenNextOutputFile()
 void DesktopDuplication::WriteRecordedImageToFile(const D3D11_MAPPED_SUBRESOURCE& mappedResource, DXGI_FORMAT format, SizeInt32 newFrameSize)
 {
 	auto bytesPerPixel = GetFormatBytesPerPixel(format);
+	assert(bytesPerPixel == 4);
 
 	// don't know why the size doesn't match the buffer
 	if (mappedResource.RowPitch * newFrameSize.Height > mappedResource.DepthPitch)
@@ -485,6 +486,7 @@ void DesktopDuplication::WriteRecordedImageToFile(const D3D11_MAPPED_SUBRESOURCE
 		{
 			// pad end of frame if necessary
 			char* row = (char*)_malloca(roundFrameWidth * bytesPerPixel);
+			assert(row);
 			memset(row, 0, roundFrameWidth * bytesPerPixel);
 			lzmaEncoder->Encode(span{ row, static_cast<size_t>(roundFrameWidth * bytesPerPixel) });
 			_freea(row);
@@ -525,8 +527,6 @@ Windows::Graphics::SizeInt32 DesktopDuplication::GetMaximumSavedFrameSize(const 
 				break;
 			decoder.Skip(sizeof(chrono::nanoseconds::rep)); // skip timestamp
 			decoder.Skip(size.Width * size.Height * GetFormatBytesPerPixel(format)); // skip pixel data
-			if (decoder.IsEof())
-				break;
 
 			maxSize.Width = max(maxSize.Width, size.Width);
 			maxSize.Height = max(maxSize.Height, size.Height);
