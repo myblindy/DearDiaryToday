@@ -45,6 +45,8 @@
 
 #include "lzma.h"
 
+#include "readerwriterqueue/readerwritercircularbuffer.h"
+
 #include "framework.h"
 
 typedef std::chrono::high_resolution_clock hr_clock;
@@ -64,5 +66,11 @@ struct __declspec(uuid("A9B3D012-3DF2-4EE3-B8D1-8695F457D3C1"))
 {
 	virtual HRESULT __stdcall GetInterface(GUID const& id, void** object) = 0;
 };
+
+static int roundUp(int numToRound, int multiple)
+{
+	assert(multiple && ((multiple & (multiple - 1)) == 0));
+	return (numToRound + multiple - 1) & -multiple;
+}
 
 typedef void (*ErrorFunc)(HRESULT);

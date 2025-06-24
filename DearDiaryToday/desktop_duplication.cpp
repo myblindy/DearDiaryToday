@@ -70,6 +70,71 @@ DesktopDuplication::DesktopDuplication(ErrorFunc errorFunc)
 {
 	InitializeCriticalSection(&fileAccessCriticalSection);
 
+	frameProcessingThread = thread([=] {
+		hr_time_point frameTimePoint{};
+		int outputFileFrameCount{};
+
+		while (!stopping)
+		{
+			FrameData frameData;
+			while (!stopping && frames.try_dequeue(frameData))
+			{
+				if (outputFileFrameCount == 0) frameTimePoint = frameData.now;
+
+				auto time_span_ns = duration_cast<chrono::nanoseconds> (frameData.now - frameTimePoint).count();
+
+				// frame rate limiter
+				if (outputFileFrameCount == 0 || time_span_ns >= 1.0 / MAX_FRAME_RATE * chrono::nanoseconds(1s).count())
+				{
+					// NV12 requires the height to be a multiple of 2, and we might as well do it here
+					auto roundFrameWidth = roundUp(frameData.width, 2);
+					auto roundFrameHeight = roundUp(frameData.height, 2);
+
+					EnterCriticalSection(&fileAccessCriticalSection);
+					lzmaEncoder->Encode(roundFrameWidth);
+					lzmaEncoder->Encode(roundFrameHeight);
+					lzmaEncoder->Encode(frameData.format);
+					lzmaEncoder->Encode(time_span_ns);
+
+					for (int y = 0; y < frameData.height; ++y)
+					{
+						lzmaEncoder->Encode({
+							reinterpret_cast<const BYTE*>(frameData.data.data()) + (frameData.height - y - 1) * frameData.stride,
+							static_cast<size_t>(frameData.width * 4) });
+						if (frameData.width < roundFrameWidth)
+						{
+							// pad end of row if necessary
+							lzmaEncoder->Encode(uint32_t{});
+						}
+					}
+					if (frameData.height < roundFrameHeight)
+					{
+						// pad end of frame if necessary
+						char* row = (char*)_malloca(roundFrameWidth * 4);
+						assert(row);
+						memset(row, 0, roundFrameWidth * 4);
+						lzmaEncoder->Encode(span{ row, static_cast<size_t>(roundFrameWidth * 4) });
+						_freea(row);
+					}
+
+					LeaveCriticalSection(&fileAccessCriticalSection);
+
+					++outputFileFrameCount;
+					frameTimePoint = frameData.now;
+
+					// file switch?
+					if (outputFileFrameCount > MAX_FRAMES_PER_DIARY_FILE)
+					{
+						OpenNextOutputFile();
+						outputFileFrameCount = 0;
+					}
+				}
+			}
+
+			WaitForSingleObject(newFrameReadyEvent.get(), 10);
+		}
+		});
+
 	CHECK_HR(CreateDXGIFactory(IID_PPV_ARGS(dxgiFactory.put())));
 
 	D3D_FEATURE_LEVEL featureLevels[] =
@@ -119,12 +184,6 @@ IAsyncAction DesktopDuplication::Start(HWND hWnd)
 	self->captureSession.StartCapture();
 }
 
-
-static int roundUp(int numToRound, int multiple)
-{
-	assert(multiple && ((multiple & (multiple - 1)) == 0));
-	return (numToRound + multiple - 1) & -multiple;
-}
 
 void DesktopDuplication::ExportVideo(wstring outputPath, ExportDiaryVideoCompletion completion, void* completionArg)
 {
@@ -351,6 +410,7 @@ void DesktopDuplication::StopDiaryAndWait()
 	stopping = true;
 
 	captureSession.Close();
+	frameProcessingThread.join();
 	lzmaEncoder.reset();
 
 	for (int diaryIdx = 0;; ++diaryIdx)
@@ -413,7 +473,7 @@ void DesktopDuplication::OnFrameArrived(Direct3D11CaptureFramePool const& sender
 	// try to map for reading
 	D3D11_MAPPED_SUBRESOURCE mappedResource{};
 	CHECK_HR(immediateContext->Map(stagingTexture.get(), 0, D3D11_MAP_READ, 0, &mappedResource));
-	WriteRecordedImageToFile(mappedResource, desc.Format, newFrameSize);
+	WriteRecordedImageToCircularFrameBuffer(mappedResource, desc.Format, newFrameSize);
 	immediateContext->Unmap(stagingTexture.get(), 0);
 
 	// resize the frame pool if the size has changed
@@ -441,11 +501,9 @@ void DesktopDuplication::OpenNextOutputFile()
 	lzmaEncoder = make_unique<LzmaEncoder>(
 		make_unique<ofstream>(GetDiaryFilePath(outputFileIndex, true), ios::binary | ios::out | ios::trunc),
 		errorFunc);
-
-	outputFileFrameCount = 0;
 }
 
-void DesktopDuplication::WriteRecordedImageToFile(const D3D11_MAPPED_SUBRESOURCE& mappedResource, DXGI_FORMAT format, SizeInt32 newFrameSize)
+void DesktopDuplication::WriteRecordedImageToCircularFrameBuffer(const D3D11_MAPPED_SUBRESOURCE& mappedResource, DXGI_FORMAT format, SizeInt32 newFrameSize)
 {
 	auto bytesPerPixel = GetFormatBytesPerPixel(format);
 	assert(bytesPerPixel == 4);
@@ -454,53 +512,14 @@ void DesktopDuplication::WriteRecordedImageToFile(const D3D11_MAPPED_SUBRESOURCE
 	if (mappedResource.RowPitch * newFrameSize.Height > mappedResource.DepthPitch)
 		return;
 
-	hr_time_point now = hr_clock::now();
-	if (outputFileFrameCount == 0) frameTimePoint = now;
+	vector<BYTE> frameBytes(mappedResource.RowPitch * newFrameSize.Height);
+	copy(reinterpret_cast<const BYTE*>(mappedResource.pData),
+		reinterpret_cast<const BYTE*>(mappedResource.pData) + mappedResource.RowPitch * newFrameSize.Height,
+		frameBytes.begin());
 
-	auto time_span_ns = duration_cast<chrono::nanoseconds> (now - frameTimePoint).count();
-
-	// max frame rate
-	if (outputFileFrameCount == 0 || time_span_ns >= 1.0 / MAX_FRAME_RATE * chrono::nanoseconds(1s).count())
-	{
-		// NV12 requires the height to be a multiple of 2, and we might as well do it here
-		auto roundFrameWidth = roundUp(newFrameSize.Width, 2);
-		auto roundFrameHeight = roundUp(newFrameSize.Height, 2);
-
-		EnterCriticalSection(&fileAccessCriticalSection);
-		lzmaEncoder->Encode(roundFrameWidth);
-		lzmaEncoder->Encode(roundFrameHeight);
-		lzmaEncoder->Encode(format);
-		lzmaEncoder->Encode(time_span_ns);
-
-		for (int y = 0; y < newFrameSize.Height; ++y)
-		{
-			lzmaEncoder->Encode({ reinterpret_cast<const BYTE*>(mappedResource.pData) + (newFrameSize.Height - y - 1) * mappedResource.RowPitch,
-				static_cast<size_t>(newFrameSize.Width * bytesPerPixel) });
-			if (newFrameSize.Width < roundFrameWidth)
-			{
-				// pad end of row if necessary
-				lzmaEncoder->Encode(uint32_t{});
-			}
-		}
-		if (newFrameSize.Height < roundFrameHeight)
-		{
-			// pad end of frame if necessary
-			char* row = (char*)_malloca(roundFrameWidth * bytesPerPixel);
-			assert(row);
-			memset(row, 0, roundFrameWidth * bytesPerPixel);
-			lzmaEncoder->Encode(span{ row, static_cast<size_t>(roundFrameWidth * bytesPerPixel) });
-			_freea(row);
-		}
-
-		LeaveCriticalSection(&fileAccessCriticalSection);
-
-		++outputFileFrameCount;
-		frameTimePoint = now;
-
-		// file switch?
-		if (outputFileFrameCount > MAX_FRAMES_PER_DIARY_FILE)
-			OpenNextOutputFile();
-	}
+	frames.try_enqueue({ newFrameSize.Width, newFrameSize.Height, (int)mappedResource.RowPitch,
+		format, hr_clock::now(), move(frameBytes) });
+	SetEvent(newFrameReadyEvent.get()); // signal that a new frame is ready
 }
 
 Windows::Graphics::SizeInt32 DesktopDuplication::GetMaximumSavedFrameSize(const vector<filesystem::path>& partPaths, int& frameCount) const

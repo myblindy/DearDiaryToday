@@ -26,12 +26,12 @@ public partial class MainWindow : Window
                 {
                     BouncerRotateTransform.Angle += 5;
                     Bouncer.Margin = new(
-                        Math.Clamp(Bouncer.Margin.Left + v.X * 4, 0, ActualWidth - Bouncer.ActualWidth),
-                        Math.Clamp(Bouncer.Margin.Top + v.Y * 4, 0, ActualHeight - Bouncer.ActualHeight),
+                        Math.Clamp(Bouncer.Margin.Left + v.X * 4, 0, RootView.ActualWidth - Bouncer.ActualWidth),
+                        Math.Clamp(Bouncer.Margin.Top + v.Y * 4, 0, RootView.ActualHeight - Bouncer.ActualHeight),
                         0, 0);
 
-                    if (Bouncer.Margin.Left == 0 || Bouncer.Margin.Left + Bouncer.ActualWidth == ActualWidth) v.X = -v.X;
-                    if (Bouncer.Margin.Top == 0 || Bouncer.Margin.Top + Bouncer.ActualHeight == ActualHeight) v.Y = -v.Y;
+                    if (Bouncer.Margin.Left == 0 || Bouncer.Margin.Left + Bouncer.ActualWidth == RootView.ActualWidth) v.X = -v.X;
+                    if (Bouncer.Margin.Top == 0 || Bouncer.Margin.Top + Bouncer.ActualHeight == RootView.ActualHeight) v.Y = -v.Y;
 
                     await animationTimer.WaitForNextTickAsync();
                 }

@@ -34,10 +34,19 @@ private:
 	const ErrorFunc errorFunc;
 	int outputFileIndex = -1;
 	std::unique_ptr<LzmaEncoder> lzmaEncoder;
-	int outputFileFrameCount{};
-	hr_time_point frameTimePoint;
 
 	CRITICAL_SECTION fileAccessCriticalSection;
+
+	struct FrameData
+	{
+		int width, height, stride;
+		DXGI_FORMAT format;
+		hr_time_point now;
+		std::vector<BYTE> data;
+	};
+	moodycamel::BlockingReaderWriterCircularBuffer<FrameData> frames{ 10 };
+	winrt::handle newFrameReadyEvent{ CreateEvent(nullptr, FALSE, FALSE, nullptr) };
+	std::thread frameProcessingThread;
 
 	winrt::com_ptr<IDXGIFactory> dxgiFactory;
 	winrt::com_ptr<ID3D11Device> d3d11Device;
@@ -45,11 +54,11 @@ private:
 	winrt::com_ptr<IDXGIDevice> dxgiDevice;
 
 	winrt::Windows::Graphics::DirectX::Direct3D11::IDirect3DDevice d3dRtDevice;
-	winrt::Windows::Graphics::Capture::GraphicsCaptureItem captureItem = { nullptr };
-	winrt::Windows::Graphics::Capture::Direct3D11CaptureFramePool framePool = { nullptr };
-	winrt::Windows::Graphics::Capture::GraphicsCaptureSession captureSession = { nullptr };
+	winrt::Windows::Graphics::Capture::GraphicsCaptureItem captureItem{ nullptr };
+	winrt::Windows::Graphics::Capture::Direct3D11CaptureFramePool framePool{ nullptr };
+	winrt::Windows::Graphics::Capture::GraphicsCaptureSession captureSession{ nullptr };
 
-	winrt::Windows::Graphics::SizeInt32 lastFrameSize = {};
+	winrt::Windows::Graphics::SizeInt32 lastFrameSize{};
 
 	void OnFrameArrived(
 		winrt::Windows::Graphics::Capture::Direct3D11CaptureFramePool const& sender,
@@ -60,7 +69,7 @@ private:
 	int GetFormatBytesPerPixel(DXGI_FORMAT) const;
 
 	void OpenNextOutputFile();
-	void WriteRecordedImageToFile(const D3D11_MAPPED_SUBRESOURCE&, DXGI_FORMAT, winrt::Windows::Graphics::SizeInt32);
+	void WriteRecordedImageToCircularFrameBuffer(const D3D11_MAPPED_SUBRESOURCE&, DXGI_FORMAT, winrt::Windows::Graphics::SizeInt32);
 
 	winrt::Windows::Graphics::SizeInt32 GetMaximumSavedFrameSize(const std::vector<std::filesystem::path>& partPaths, int& frameCount) const;
 

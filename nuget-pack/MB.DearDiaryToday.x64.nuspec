@@ -2,7 +2,7 @@
     <metadata>
         <!-- Required elements-->
         <id>MB.DearDiaryToday.x64</id>
-        <version>1.0.2</version>
+        <version>1.1.0</version>
         <description>A library that records a window during run-time and allows arbitrary saves to video files for later playback. Supports using partial diary files after crashes to get a visual log of the last actions done.</description>
         <authors>myblindy</authors>
         <owners>myblindy</owners>
