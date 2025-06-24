@@ -107,7 +107,7 @@ IAsyncAction DesktopDuplication::Start(HWND hWnd)
 	}
 
 	lastFrameSize = captureItem.Size();
-	framePool = Direct3D11CaptureFramePool::Create(d3dRtDevice, DirectXPixelFormat::B8G8R8A8UIntNormalized, 2, lastFrameSize);
+	framePool = Direct3D11CaptureFramePool::CreateFreeThreaded(d3dRtDevice, DirectXPixelFormat::B8G8R8A8UIntNormalized, 2, lastFrameSize);
 	captureSession = framePool.CreateCaptureSession(captureItem);
 	frameArrivedRevoker = framePool.FrameArrived(auto_revoke, { this, &DesktopDuplication::OnFrameArrived });
 
