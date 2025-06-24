@@ -1,6 +1,7 @@
 ﻿using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.Runtime.InteropServices;
 using System.Threading;
 using System.Threading.Tasks;
@@ -11,19 +12,31 @@ public static partial class DearDiaryToday
 {
     [UnmanagedFunctionPointer(CallingConvention.StdCall)]
     delegate void ErrorCallback(HRESULT hr);
-    
+
+    [UnmanagedFunctionPointer(CallingConvention.StdCall)]
+    delegate void InitializeDiaryCompletion(bool hasDirtyDiary, IntPtr arg);
+
     [DllImport("deardiarytoday.dll", EntryPoint = "InitializeDiary", CallingConvention = CallingConvention.StdCall)]
-    static extern bool RawInitializeDiary(ErrorCallback errorFunc);
+    static extern void RawInitializeDiary(ErrorCallback errorFunc,
+        InitializeDiaryCompletion initializeDiaryCompletion, IntPtr initializeDiaryCompletionArg);
 
     [DllImport("deardiarytoday.dll", EntryPoint = "StartDiary", CallingConvention = CallingConvention.StdCall)]
     static extern void RawStartDiary(HWND hWnd);
+
+    static readonly ConcurrentDictionary<int, TaskCompletionSource<bool>> initializeDiaryTCS = [];
+    static int nextInitializeDiaryCompletionId = 0;
+    static readonly InitializeDiaryCompletion initializeDiaryCompletion = (hasDirtyDiary, arg) =>
+    {
+        initializeDiaryTCS[arg.ToInt32()].SetResult(hasDirtyDiary);
+        initializeDiaryTCS.TryRemove(arg.ToInt32(), out _);
+    };
 
     static readonly ErrorCallback errorCallback = hr =>
     {
         if (!hr.Succeeded)
             throw new InvalidOperationException($"DearDiaryToday error with HRESULT: {hr}");
     };
-    
+
     /// <summary>
     /// Starts the diary recording. If any previous diaries are present, they are assumed to be left-overs of a crash
     /// and optionally can be saved to a video file before starting a new recording.
@@ -31,17 +44,23 @@ public static partial class DearDiaryToday
     /// <returns><see langword="true"/> if a dirty recording was saved.</returns>
     public static async Task<bool> StartDiary(IntPtr hWnd, Func<Task<string?>>? exportOnDirtyAction = null)
     {
-        var dirty = false;
-        if (RawInitializeDiary(errorCallback) && exportOnDirtyAction is not null
+        var tcs = new TaskCompletionSource<bool>();
+        var id = Interlocked.Increment(ref nextInitializeDiaryCompletionId);
+        initializeDiaryTCS[id] = tcs;
+
+        RawInitializeDiary(errorCallback, initializeDiaryCompletion, new(id));
+
+        var hasDirtyDiaryFiles = await tcs.Task.ConfigureAwait(false);
+
+        if (hasDirtyDiaryFiles && exportOnDirtyAction is not null
             && await exportOnDirtyAction() is { } exportVideoFileName)
         {
             await ExportDiaryVideo(exportVideoFileName);
-            dirty = true;
         }
 
         RawStartDiary(new(hWnd));
 
-        return dirty;
+        return hasDirtyDiaryFiles;
     }
 
     [UnmanagedFunctionPointer(CallingConvention.StdCall)]

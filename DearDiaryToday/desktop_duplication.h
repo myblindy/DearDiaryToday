@@ -3,7 +3,8 @@
 #include "LzmaEncoder.h"
 
 extern "C" {
-	bool __declspec(dllexport) __stdcall InitializeDiary(ErrorFunc);
+	typedef void (*InitializeDiaryCompletion)(bool, void*);
+	void __declspec(dllexport) __stdcall InitializeDiary(ErrorFunc, InitializeDiaryCompletion, void*);
 
 	void __declspec(dllexport) __stdcall StartDiary(HWND);
 

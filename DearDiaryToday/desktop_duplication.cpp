@@ -12,21 +12,35 @@ using namespace Windows::Graphics;
 using namespace Windows::Graphics::Capture;
 using namespace Windows::Graphics::DirectX;
 using namespace Windows::Graphics::DirectX::Direct3D11;
+using namespace Windows::System;
 
+DispatcherQueueController duplicationQueueController{ nullptr };
+DispatcherQueue duplicationQueue{ nullptr };
 com_ptr<DesktopDuplication> desktopDuplicationInstance;
 
-bool __stdcall InitializeDiary(ErrorFunc _errorFunc)
+void __stdcall InitializeDiary(ErrorFunc errorFunc, InitializeDiaryCompletion completion, void* completionArg)
 {
-	MFStartup(MF_VERSION);
-	desktopDuplicationInstance = make_self<DesktopDuplication>(_errorFunc);
+	duplicationQueueController = DispatcherQueueController::CreateOnDedicatedThread();
+	duplicationQueue = duplicationQueueController.DispatcherQueue();
 
-	for (int i = 0; i < MAX_DIARY_FILES; ++i)
-	{
-		auto diaryFilePath = DesktopDuplication::GetDiaryFilePath(i, false);
-		if (filesystem::exists(diaryFilePath))
-			return true; // found a diary file
-	}
-	return false; // no diary files found
+	MFStartup(MF_VERSION);
+
+	duplicationQueue.TryEnqueue([=] {
+		desktopDuplicationInstance = make_self<DesktopDuplication>(errorFunc);
+
+		auto foundDiaryFiles = false;
+		for (int i = 0; i < MAX_DIARY_FILES; ++i)
+		{
+			auto diaryFilePath = DesktopDuplication::GetDiaryFilePath(i, false);
+			if (filesystem::exists(diaryFilePath))
+			{
+				foundDiaryFiles = true;
+				break;
+			}
+		}
+
+		completion(foundDiaryFiles, completionArg);
+		});
 }
 
 void StartDiary(HWND hWnd)
@@ -40,7 +54,9 @@ void StartDiary(HWND hWnd)
 		filesystem::remove(diaryFilePath, ec);
 	}
 
-	desktopDuplicationInstance->Start(hWnd);
+	duplicationQueue.TryEnqueue([=] {
+		desktopDuplicationInstance->Start(hWnd);
+		});
 }
 
 void ExportDiaryVideo(LPWSTR outputPath, ExportDiaryVideoCompletion completion, void* completionArg)
@@ -53,11 +69,16 @@ void __stdcall StopDiary(StopDiaryCompletion completion, void* completionArg)
 	if (!desktopDuplicationInstance)
 		return; // nothing to stop
 
-	thread([=] {
+	duplicationQueue.TryEnqueue([=] {
 		desktopDuplicationInstance->StopDiaryAndWait();
 		desktopDuplicationInstance = nullptr;
 		completion(completionArg);
-		}).detach();
+
+		duplicationQueueController.ShutdownQueueAsync().Completed([=](auto&&, auto&&) {
+			duplicationQueue = nullptr;
+			duplicationQueueController = nullptr;
+			});
+		});
 }
 
 #define CHECK_PTR(ptr) do { if (!ptr) { errorFunc(S_FALSE); return; } } while (false)
@@ -107,8 +128,9 @@ IAsyncAction DesktopDuplication::Start(HWND hWnd)
 	}
 
 	lastFrameSize = captureItem.Size();
-	framePool = Direct3D11CaptureFramePool::Create(d3dRtDevice, DirectXPixelFormat::B8G8R8A8UIntNormalized, 2, lastFrameSize);
+	framePool = Direct3D11CaptureFramePool::CreateFreeThreaded(d3dRtDevice, DirectXPixelFormat::B8G8R8A8UIntNormalized, 2, lastFrameSize);
 	captureSession = framePool.CreateCaptureSession(captureItem);
+	captureSession.IsCursorCaptureEnabled(true);
 	frameArrivedRevoker = framePool.FrameArrived(auto_revoke, { this, &DesktopDuplication::OnFrameArrived });
 
 	OpenNextOutputFile();

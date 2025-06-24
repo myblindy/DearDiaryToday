@@ -9,6 +9,7 @@
 
 #include <Unknwn.h>
 #include <inspectable.h>
+#include <winrt/windows.system.h>
 #include <winrt/Windows.Foundation.h>
 #include <winrt/Windows.Graphics.Capture.h>
 #include <winrt/Windows.Graphics.DirectX.h>
